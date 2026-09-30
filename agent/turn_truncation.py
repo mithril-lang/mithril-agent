@@ -422,7 +422,15 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             request_id = ""
             final_response = site_copy("stream_dropped_tool_call", label=provider_label_for(agent.provider))
             failure = (FailoverReason.timeout.value, True)
-        close_interrupted_tool_sequence(st.messages, final_response)
+        # Remove the synthetic assistant-fragment/user-nudge trail before
+        # persisting this terminal outcome. Keeping that unanswered user nudge
+        # poisons cold resume (the next real user message becomes user→user).
+        # Fold the visible partial and failure copy into one closing assistant
+        # row so the durable transcript remains strictly alternating.
+        collapse_continuation_trail(
+            agent, st.messages, st.current_turn_user_idx, finish_reason="error",
+            parts=[*st.truncated_response_parts, (final_response, False)],
+        )
         verdict = st.end_turn(final_response, cleanup=True, failure=failure)
         if isinstance(verdict.result, dict) and isinstance(stream_error, dict):
             verdict.result["provider_stream_error"] = dict(stream_error)
@@ -543,10 +551,6 @@ def recover_from_truncation(
     # terminal error -- stop here rather than misclassifying it as text and
     # issuing another continuation.
     _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
-    if st.is_stub and _dropped_tools and (
-        st.length_continue_retries or getattr(st.response, "_stream_error", None)
-    ):
-        return _retry_truncated_tool_call(st, api_kwargs)
 
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
     if abort is not None:
@@ -558,6 +562,10 @@ def recover_from_truncation(
         cf = _content_filter_fallback(st, _retry)
         if cf is not None:
             return cf
+        if st.is_stub and _dropped_tools and (
+            st.length_continue_retries or getattr(st.response, "_stream_error", None)
+        ):
+            return _retry_truncated_tool_call(st, api_kwargs)
         if _trunc_msg is not None:
             if not _trunc_has_tool_calls:
                 return _continue_text(st, _retry, _trunc_msg)
