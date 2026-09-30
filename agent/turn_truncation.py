@@ -397,6 +397,38 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
     execute incomplete arguments."""
     agent = st.agent
+    dropped_tools = getattr(st.response, "_dropped_tool_names", None)
+    stream_error = getattr(st.response, "_stream_error", None)
+    # A partial action after an output-length continuation is already a second
+    # logical attempt. Re-prompting or replaying it can regenerate/execute the
+    # same action yet again. A structured terminal SSE error is likewise an
+    # explicit provider verdict, not a truncation to probe past. End safely;
+    # tool_calls=None on the stub guarantees the incomplete arguments never run.
+    if st.is_stub and dropped_tools and (st.length_continue_retries or stream_error):
+        agent._flush_status_buffer()
+        if isinstance(stream_error, dict):
+            request_id = str(stream_error.get("request_id") or "").strip()
+            detail = str(stream_error.get("message") or stream_error.get("code") or "The upstream stream failed.")
+            final_response = site_copy(
+                "stream_error_tool_call", label=provider_label_for(agent.provider), detail=detail,
+                request_suffix=f" (request ID: {request_id})" if request_id else "",
+            )
+            failure = (FailoverReason.timeout.value, True)
+        elif getattr(st.response, "_clean_eof", False):
+            request_id = ""
+            final_response = site_copy("stream_closed_tool_call", label=provider_label_for(agent.provider))
+            failure = ("truncated", True)
+        else:
+            request_id = ""
+            final_response = site_copy("stream_dropped_tool_call", label=provider_label_for(agent.provider))
+            failure = (FailoverReason.timeout.value, True)
+        close_interrupted_tool_sequence(st.messages, final_response)
+        verdict = st.end_turn(final_response, cleanup=True, failure=failure)
+        if isinstance(verdict.result, dict) and isinstance(stream_error, dict):
+            verdict.result["provider_stream_error"] = dict(stream_error)
+            if request_id:
+                verdict.result["provider_request_id"] = request_id
+        return verdict
     if st.truncated_tool_call_retries < 4:
         st.truncated_tool_call_retries += 1
         n = st.truncated_tool_call_retries
@@ -504,6 +536,17 @@ def recover_from_truncation(
     _trunc_msg = normalize_response_for_agent(agent, response)
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+    # Partial-stream stubs deliberately erase incomplete calls
+    # (tool_calls=None), so _dropped_tool_names is the only surviving action
+    # signal. Preserve the established first-drop chunking recovery, but once
+    # this turn is already a continuation -- or the provider sent a structured
+    # terminal error -- stop here rather than misclassifying it as text and
+    # issuing another continuation.
+    _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
+    if st.is_stub and _dropped_tools and (
+        st.length_continue_retries or getattr(st.response, "_stream_error", None)
+    ):
+        return _retry_truncated_tool_call(st, api_kwargs)
 
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
     if abort is not None:

@@ -2443,7 +2443,8 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False):
+    dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False,
+    stream_error=None):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
@@ -2479,6 +2480,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
             _dropped_tool_names=dropped_tool_names or None,
             _overflow_terminal=overflow_terminal,
             _clean_eof=clean_eof,
+            _stream_error=stream_error,
         )
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
@@ -2493,7 +2495,38 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
         _dropped_tool_names=dropped_tool_names or None,
         _overflow_terminal=overflow_terminal,
         _clean_eof=clean_eof,
+        _stream_error=stream_error,
     )
+
+
+def _structured_stream_error(error: BaseException) -> Optional[dict]:
+    """Small, redacted provider error carried by a partial-delivery stub.
+
+    Once tokens have reached the caller, the streaming worker cannot raise the
+    provider's terminal SSE error without losing the partial-tool safety marker.
+    Keep only the fields needed to explain/correlate the failure; never retain
+    headers, raw SSE text, or arbitrary provider payload fields.
+    """
+    if not isinstance(error, ProviderStreamError):
+        return None
+    error_obj = error.body.get("error") if isinstance(error.body, dict) else None
+    if not isinstance(error_obj, dict):
+        error_obj = {}
+    from agent.redact import redact_sensitive_text
+    detail = {
+        "code": redact_sensitive_text(str(error_obj.get("code") or "provider_stream_error"), force=True)[:120],
+        "message": redact_sensitive_text(str(error_obj.get("message") or str(error)), force=True)[:500],
+    }
+    if error.status_code is not None:
+        detail["status_code"] = error.status_code
+    # Gateways vary between OpenAI-style error.request_id and a top-level
+    # request_id next to error. Preserve either correlation shape.
+    request_id = error_obj.get("request_id") or (
+        error.body.get("request_id") if isinstance(error.body, dict) else None
+    )
+    if request_id:
+        detail["request_id"] = redact_sensitive_text(str(request_id), force=True)[:200]
+    return detail
 
 
 # SSE error events from proxies (OpenRouter's {"error":{"message":"Network
@@ -4022,7 +4055,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 len(_partial_text or ""), error)
         _stub = _build_partial_stream_stub("assistant", _partial_text, None,
             getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names,
-            api_mode=getattr(self.agent, "api_mode", None))
+            api_mode=getattr(self.agent, "api_mode", None),
+            stream_error=_structured_stream_error(error))
         if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:
             _stub._content_filter_terminated = True
         return _stub
