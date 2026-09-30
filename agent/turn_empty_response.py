@@ -44,6 +44,62 @@ class EmptyResponseVerdict:
     api_call_count: int
 
 
+def _completion_tokens(response: Any) -> int:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+    if isinstance(usage, dict):
+        raw = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+    else:
+        raw = getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None) or 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _reasoning_budget_starved(agent: Any, response: Any, finish_reason: str, final_response: Any) -> bool:
+    """True when visible text is empty because the completion budget went to hidden reasoning.
+
+    Mithril strips reasoning unless include_reasoning (ADR 0025), so agents see empty content
+    plus finish_reason length / billed completion tokens / a mithril.fund base_url.
+    """
+    if (agent._strip_think_blocks(final_response or "") or "").strip():
+        return False
+    if str(finish_reason or "") == "length":
+        return True
+    if _completion_tokens(response) > 0:
+        return True
+    try:
+        from utils import base_url_host_matches
+        return base_url_host_matches(getattr(agent, "base_url", "") or "", "mithril.fund")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _retry_reasoning_budget_once(agent: Any) -> bool:
+    """One immediate retry with a larger max_tokens (and reasoning off when the route honors it).
+
+    Avoids burning the empty-response ladder against the same starved budget. Returns True when
+    the caller should ``continue`` the turn loop.
+    """
+    if getattr(agent, "_reasoning_budget_recovery_attempted", False):
+        return False
+    from agent.turn_truncation import boosted_output_cap
+
+    agent._reasoning_budget_recovery_attempted = True
+    agent._ephemeral_reasoning_off = True
+    agent._ephemeral_max_output_tokens = boosted_output_cap(agent, None, 1)
+    logger.warning(
+        "Reasoning budget starved visible content — one recovery retry with max_tokens=%s (model=%s provider=%s)",
+        agent._ephemeral_max_output_tokens, agent.model, agent.provider,
+    )
+    agent._buffer_diagnostic_status(
+        "↻ Reasoning used the output budget — retrying once with a larger completion limit"
+    )
+    return True
+
+
 def _retry_empty(
     agent: Any, response: Any, finish_reason: str, empty_candidate: bool, *, messages: Any,
     conversation_history: Any, api_call_count: int, observed_generation: bool = False,
@@ -67,6 +123,12 @@ def _retry_empty(
         return None, None, deterministic
     agent._empty_content_retries += 1
     n = agent._empty_content_retries
+    # When the prior empty was a starved reasoning budget, raise max_tokens on every
+    # empty-ladder hop so retries are not byte-identical to the failed request.
+    if _reasoning_budget_starved(agent, response, finish_reason, ""):
+        from agent.turn_truncation import boosted_output_cap
+        agent._ephemeral_reasoning_off = True
+        agent._ephemeral_max_output_tokens = boosted_output_cap(agent, None, n)
     wait_time = jittered_backoff(n, base_delay=5.0, max_delay=60.0)
     logger.warning(
         "Empty response (no content or reasoning) — retry %d/%d in %.1fs (model=%s)",
@@ -244,6 +306,15 @@ def recover_empty_response(
     # Empty-response retries: truly empty replies AND reasoning-only replies after
     # prefill exhaustion.
     _truly_empty = not agent._strip_think_blocks(final_response).strip()
+    # Mithril (and other routes that hide reasoning) can return empty visible text after
+    # the budget was spent on thoughts. One immediate larger-budget retry before the
+    # slow empty ladder — otherwise "No reply" follows useless same-budget retries.
+    if (
+        _truly_empty
+        and _reasoning_budget_starved(agent, response, finish_reason, final_response)
+        and _retry_reasoning_budget_once(agent)
+    ):
+        return _verdict("continue")
     _empty_candidate = _truly_empty and (not _has_structured or agent._thinking_prefill_retries >= 2)
     action, interrupt_result, _deterministic_empty = _retry_empty(
         agent, response, finish_reason, _empty_candidate, messages=messages,
