@@ -96,6 +96,29 @@ class TestPartialStreamStubFinishReason:
             "finish_reason, a distinct failure class (#102766)."
         )
 
+    def test_structured_stream_error_keeps_only_safe_correlation_fields(self):
+        from agent.chat_completion_helpers import ProviderStreamError, _structured_stream_error
+
+        error = ProviderStreamError(
+            status_code=504,
+            body={
+                "error": {
+                    "code": "upstream_timeout",
+                    "message": "Inference upstream timed out while streaming.",
+                    "internal_debug": "must-not-propagate",
+                },
+                "request_id": "chat:test-request-123",
+            },
+            raw_text="raw SSE payload must not propagate",
+        )
+
+        assert _structured_stream_error(error) == {
+            "code": "upstream_timeout",
+            "message": "Inference upstream timed out while streaming.",
+            "status_code": 504,
+            "request_id": "chat:test-request-123",
+        }
+
 
 class TestTerminalChunkFenceException:
     """A superseded writer must still accept the provider's terminal
@@ -514,6 +537,90 @@ class TestConversationLoopPartialStreamContinuation:
         assert loop_agent.client.chat.completions.create.call_count == 2
         assert result["final_response"].count(repeated) == 2
 
+    @pytest.mark.parametrize("terminal_kind", ["structured-error", "clean-eof"])
+    def test_output_cap_then_partial_tool_stops_without_replay_or_execution(
+        self, loop_agent, terminal_kind, tmp_path,
+    ):
+        """Live Mithril shape: a 4,096-token response requests one continuation,
+        then that request ends while streaming ``write_file`` arguments.
+
+        The dropped action marker must win over tool_calls=None: report the
+        upstream failure, never classify it as reasoning exhaustion, and never
+        issue a third request or dispatch a repaired argument prefix.
+        """
+        from tests.agent.test_run_agent import _mock_response, _mock_assistant_msg
+
+        output_cap = _mock_response(
+            content="The initial response reached its configured output cap.",
+            finish_reason=FINISH_REASON_LENGTH,
+            usage={"prompt_tokens": 1000, "completion_tokens": 4096, "total_tokens": 5096},
+        )
+        partial_tool = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="qwen/qwen3.8-27b",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=""),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+            _dropped_tool_names=["write_file"],
+            _clean_eof=terminal_kind == "clean-eof",
+            _stream_error=(
+                {
+                    "code": "upstream_timeout",
+                    "message": "Inference upstream timed out while streaming.",
+                    "request_id": "chat:test-request-123",
+                }
+                if terminal_kind == "structured-error" else None
+            ),
+        )
+        loop_agent.client.chat.completions.create.side_effect = [output_cap, partial_tool]
+
+        # Persist through a real SQLite SessionDB and reopen it below. This
+        # catches a live-list result that looks safe while cold resume still
+        # contains the synthetic unanswered continuation nudge.
+        from hermes_state import SessionDB
+        db_path = tmp_path / "state.db"
+        session_id = f"partial-tool-{terminal_kind}"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id, source="cli")
+        loop_agent.session_id = session_id
+        loop_agent._session_db = db
+        loop_agent._session_db_created = True
+        loop_agent._session_row_replay_pending = None
+
+        with (
+            patch("model_tools.handle_function_call") as execute_tool,
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("write the bot profile")
+
+        db.close()
+        reopened = SessionDB(db_path=db_path)
+        resumed = reopened.get_messages_as_conversation(session_id)
+        reopened.close()
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        execute_tool.assert_not_called()
+        assert result["completed"] is False
+        assert "reasoning consumed the entire budget" not in result["final_response"]
+        assert "write_file" not in str(result["messages"]), (
+            "The partial action must not be persisted as an executable tool call."
+        )
+        assert resumed[-1]["role"] == "assistant"
+        assert not any(message.get("_length_continuation_nudge") for message in resumed)
+        roles = [message["role"] for message in resumed]
+        assert all(left != right for left, right in zip(roles, roles[1:])), roles
+        if terminal_kind == "structured-error":
+            assert "Inference upstream timed out while streaming" in result["final_response"]
+            assert result["provider_request_id"] == "chat:test-request-123"
+            assert result["provider_stream_error"]["code"] == "upstream_timeout"
+        else:
+            assert "kept closing the stream" in result["final_response"]
+            assert "provider_request_id" not in result
+
 
 class TestContentFilterStallActivatesFallback:
     """Regression for #32421: a provider output-layer content safety filter
@@ -590,6 +697,11 @@ class TestContentFilterStallActivatesFallback:
                 usage=None,
                 _dropped_tool_names=["write_file"],
                 _content_filter_terminated=True,
+                _stream_error={
+                    "code": "content_policy_blocked",
+                    "message": "Provider blocked the partial response.",
+                    "request_id": "chat:content-filter-test",
+                },
             )
 
         recovery = _mock_response(

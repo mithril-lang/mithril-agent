@@ -332,6 +332,10 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "reporting an error, so nothing was run. This is usually the provider or a proxy in front "
         "of it cutting long replies short. Send /retry; asking for the work in smaller steps also helps."
     ),
+    "stream_error_tool_call": (
+        "{label} reported an error while the model was writing an action, so Hermes stopped and "
+        "did not run the incomplete action. {detail}{request_suffix}"
+    ),
     # Rides failure_reason="loop_error" (advisory; the turn is incomplete, not failed).
     "local_processing_error": (
         "Hermes hit an internal error while handling the model's reply and stopped this turn. "
