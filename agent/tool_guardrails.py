@@ -275,11 +275,13 @@ _DECISION_MESSAGES: dict[str, str] = {
     ),
     "loop_web_search_cap": (
         "Blocked web_search: this turn has already made {cap} web searches, the per-turn limit. "
-        "This looks like a runaway search loop. Work with the results you already have and give the user your answer."
+        "This counts successful searches and changed queries too; it does not establish a lack of progress. "
+        "Work with the results you already have and give the user your answer."
     ),
     "loop_subagent_cap": (
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
-        "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
+        "This counts successful spawns too; it does not establish a lack of progress. "
+        "Finish the work with the results you have and answer the user."
     ),
 }
 

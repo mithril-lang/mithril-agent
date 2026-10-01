@@ -79,6 +79,56 @@ def _seed_exact_failures(agent: AIAgent, tool_name: str, args: dict, count: int 
         )
 
 
+@pytest.mark.parametrize("cap,expected_calls", [(2, 2), (0, 51)])
+def test_search_cap_from_disk_controls_real_turn(tmp_path, monkeypatch, cap, expected_calls):
+    """Successful distinct queries obey the chosen cap; zero allows more than fifty."""
+    from hermes_cli.config import set_config_value
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    set_config_value("tool_loop_guardrails.loop_caps.max_web_searches", str(cap))
+    # Real config resolution and agent construction, with only provider/tool I/O mocked.
+    with (
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
+            max_iterations=60, quiet_mode=True, skip_context_files=True,
+            skip_memory=True, platform="desktop",
+        )
+    agent.client = MagicMock()
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent._disable_streaming = True
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[
+            _mock_tool_call("web_search", json.dumps({"query": f"query {i}"}), f"search-{i}")
+        ]) for i in range(51)
+    ] + [_mock_response(content="done")]
+    with (
+        patch("model_tools.handle_function_call", return_value='{"results": ["useful evidence"]}') as tool,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("Research different queries")
+    assert tool.call_count == expected_calls
+    if cap:
+        assert result["guardrail"]["code"] == "loop_web_search_cap"
+        reply = result["final_response"]
+        assert "including successful ones" in reply
+        assert "max_web_searches <count>" in reply
+        assert "0 = unlimited" in reply
+        assert "without making progress" not in reply
+    else:
+        assert result["final_response"] == "done"
+        assert "guardrail" not in result
+
+
 def _hard_stop_config(**overrides) -> dict:
     cfg = {
         "tool_loop_guardrails": {
