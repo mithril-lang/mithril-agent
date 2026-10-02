@@ -2088,7 +2088,16 @@ Hard stops are designed to catch **replays** — the same call, unchanged, with 
 
 ### Per-turn runaway-loop caps
 
-Separate from the failure-based thresholds above, `loop_caps` sets hard ceilings on how many `web_search` calls and subagent spawns a single agent loop (turn) may make. The counters reset at the start of every turn, so a legitimate multi-turn session is never starved — but a single turn that spirals into an unbounded search or delegation loop is stopped. These are always on and fire regardless of `hard_stop_enabled`. A single turn issuing dozens of web searches or spawning dozens of subagents is already pathological, so the defaults are low. When a cap is reached, the offending tool call is blocked with an explanatory message and the turn stops cleanly instead of burning the rest of the budget. Set either value to `0` to disable that cap entirely.
+Separate from the failure-based thresholds above, `loop_caps` sets configurable ceilings on how many `web_search` calls and subagent spawns a single agent loop (turn) may make. The counters reset at the start of every turn and count successful calls and changed queries too. Reaching a cap does not establish a lack of progress. A nonzero cap fires regardless of `hard_stop_enabled`; the next offending call is blocked and the turn stops cleanly. Set either value to `0` to disable that cap entirely.
+
+For example, remove only the web-search count limit in the current profile:
+
+```bash
+hermes config get tool_loop_guardrails.loop_caps.max_web_searches
+hermes config set tool_loop_guardrails.loop_caps.max_web_searches 0
+```
+
+Use a positive integer instead of `0` for your own limit. Start a new session after changing the setting so the agent loads it. For a named profile, use `hermes -p <profile> config set ...`. This setting removes only the per-turn search cap: cancellation, the overall `agent.max_turns` budget, duplicate/failure warnings and configured hard stops, and provider rate limits remain in force. Unlimited searches can increase paid usage and allow longer unproductive loops. Interactive sessions default to warnings only; to stop repeated failures or unchanged results while permitting successful searches with different queries, also opt in to `hermes config set tool_loop_guardrails.hard_stop_enabled true`. The defaults remain unchanged until you explicitly choose another value.
 
 A single `delegate_task` batch counts each task toward `max_subagents` (a batch of 3 spends 3), so the cap tracks real subagents spawned rather than `delegate_task` invocations.
 

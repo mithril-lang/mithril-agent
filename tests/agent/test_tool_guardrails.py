@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -268,6 +270,27 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
+
+
+@pytest.mark.parametrize("failed,threshold,code", [
+    (True, "exact_failure", "repeated_exact_failure_block"),
+    (False, "idempotent_no_progress", "idempotent_no_progress_block"),
+])
+def test_unlimited_search_cap_keeps_failure_and_no_progress_hard_stops(failed, threshold, code):
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({
+        "hard_stop_enabled": True,
+        "loop_caps": {"max_web_searches": 0},
+        "hard_stop_after": {threshold: 2},
+    }, platform="desktop"))
+    args = {"query": "unchanged query"}
+    for _ in range(2):
+        assert controller.before_call("web_search", args).allows_execution
+        result = '{"error": "provider denied request"}' if failed else '{"results": []}'
+        controller.after_call("web_search", args, result, failed=failed)
+    decision = controller.before_call("web_search", args)
+    assert decision.code == code
+    assert decision.should_halt
+
 
 
 

@@ -1274,6 +1274,19 @@ class AIAgent(
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
+        cap_setting = {
+            "loop_web_search_cap": "max_web_searches",
+            "loop_subagent_cap": "max_subagents",
+        }.get(decision.code)
+        if cap_setting:
+            return (
+                f"I stopped because this turn reached the configured limit of {decision.count} "
+                f"{'web searches' if cap_setting == 'max_web_searches' else 'subagent spawns'}. "
+                "This limit counts all calls, including successful ones. To change it, use "
+                f"`hermes config set tool_loop_guardrails.loop_caps.{cap_setting} <count>` "
+                "(0 = unlimited), then start a new session. Removing this cap can increase "
+                "cost and allow longer loops; other budgets and safety checks still apply."
+            )
         return (
             f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
             f"{decision.count} times without making progress. The last result above shows what "
