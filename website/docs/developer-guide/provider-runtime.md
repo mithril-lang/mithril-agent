@@ -44,6 +44,15 @@ records on the final delta or across multiple deltas; omit the field on chunks
 without new records. The collected records pass through response normalization
 and assistant-message storage into session replay, including nested signed payloads.
 
+## Mithril output budgets
+
+For the Mithril API host, an omitted output cap defaults to 32,768 tokens, allowing
+reasoning without reserving the entire context for generation. The 262,144-token
+context includes both input and output; it cannot be used as an output default.
+Explicit per-request, user and provider caps retain precedence. Other endpoints
+keep their existing defaults. Rejected requests must be corrected, not retried with
+the same full-context output budget.
+
 ## Resolution precedence
 
 At a high level, provider resolution uses:

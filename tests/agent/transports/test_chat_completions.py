@@ -343,6 +343,53 @@ class TestChatCompletionsBuildKwargs:
         assert kw.get("extra_body", {}).get("think") is None
         assert kw.get("reasoning_effort") == "none"
 
+    def test_mithril_omitted_budget_leaves_room_after_reasoning(self, transport):
+        from agent.transports.chat_completions import MITHRIL_OMITTED_OUTPUT_TOKENS
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("custom")
+        kw = transport.build_kwargs(
+            model="qwen/qwen3.8-27b",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            base_url="https://api.mithril.fund/v1",
+            max_tokens=None,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert 4096 < kw["max_tokens"] < 262144 - 131072
+        assert kw["max_tokens"] == MITHRIL_OMITTED_OUTPUT_TOKENS
+
+    def test_mithril_default_does_not_leak_to_other_endpoints(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("custom")
+        for base_url in ["https://api.mithril.fund/v1", "https://api.mithril.fund.evil.test/v1",
+                         "https://example.com/v1", "https://api.mithril.fund/v1"]:
+            kw = transport.build_kwargs(
+                model="qwen/qwen3.8-27b", messages=[{"role": "user", "content": "Hi"}],
+                provider_profile=profile, base_url=base_url, max_tokens=None,
+                max_tokens_param_fn=lambda n: {"max_tokens": n},
+            )
+            if base_url == "https://api.mithril.fund/v1":
+                assert 4096 < kw["max_tokens"] < 262144 - 131072
+            else:
+                assert "max_tokens" not in kw
+
+    def test_mithril_keeps_an_explicit_output_budget(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("custom")
+        kw = transport.build_kwargs(
+            model="qwen/qwen3.8-27b",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            base_url="https://api.mithril.fund/v1",
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 4096
+
 
 
     def test_gemini_openai_compat_flash_reasoning_maps_to_nested_google_thinking_config(self, transport):
