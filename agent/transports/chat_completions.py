@@ -329,6 +329,19 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
     return sanitized
 
 
+# The context includes input + output. Leave input room while allowing reasoning.
+MITHRIL_OMITTED_OUTPUT_TOKENS = 32_768
+
+
+def _mithril_omitted_output_tokens(base_url: Any) -> int | None:
+    """Output budget for a Mithril request that did not set one."""
+    from utils import base_url_host_matches
+
+    if base_url_host_matches(str(base_url or ""), "api.mithril.fund"):
+        return MITHRIL_OMITTED_OUTPUT_TOKENS
+    return None
+
+
 def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
     """Preserve internal task/recovery budgets and provider protocol exceptions."""
     max_tokens_fn = params.get("max_tokens_param_fn")
@@ -338,6 +351,10 @@ def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, param
             return
     if profile_max and max_tokens_fn:
         api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
+        return
+    omitted = _mithril_omitted_output_tokens(params.get("base_url"))
+    if omitted and max_tokens_fn:
+        api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, omitted)))
 
 
 
