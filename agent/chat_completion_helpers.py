@@ -2535,7 +2535,7 @@ def _structured_stream_error(error: BaseException) -> Optional[dict]:
 # connection like an httpx drop.
 _SSE_CONN_PHRASES = ("connection lost", "connection reset", "connection closed", "connection terminated",
     "network error", "network connection", "terminated", "peer closed", "broken pipe",
-    "upstream connect error")
+    "upstream connect error", "the research authority did not answer this hop")
 
 
 def _rejects_stream_options(exc: BaseException) -> bool:
