@@ -848,9 +848,13 @@ class TestStreamingFallback:
 
 
 
+    @pytest.mark.parametrize("error_message", [
+        "Network connection lost.",
+        "the research authority did not answer this hop (a reset object or a timed-out internal call).",
+    ])
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_sse_connection_lost_retried_as_transient(self, mock_close, mock_create):
+    def test_sse_connection_lost_retried_as_transient(self, mock_close, mock_create, error_message):
         """SSE 'Network connection lost' (APIError w/ no status_code) retries like httpx errors.
 
         OpenRouter sends {"error":{"message":"Network connection lost."}} as an SSE
@@ -865,9 +869,9 @@ class TestStreamingFallback:
         # Key: no status_code attribute (unlike APIStatusError which has one).
         from openai import APIError as OAIAPIError
         sse_error = OAIAPIError(
-            message="Network connection lost.",
+            message=error_message,
             request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
-            body={"message": "Network connection lost."},
+            body={"message": error_message},
         )
 
         mock_client = MagicMock()
