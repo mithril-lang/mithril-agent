@@ -82,7 +82,9 @@ LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
 # Importing ``mcp`` costs ~260ms, so it is deferred to first use (_ensure_mcp_sdk); availability
 # is decided now via find_spec so every ``if not _MCP_AVAILABLE`` gate / patch / skipif holds.
 try:
-    _MCP_AVAILABLE = importlib.util.find_spec("mcp") is not None
+    _mcp_spec = importlib.util.find_spec("mcp")
+    # The repository's mcp/ server catalog must not masquerade as the SDK.
+    _MCP_AVAILABLE = _mcp_spec is not None and _mcp_spec.origin is not None
 except Exception:
     _MCP_AVAILABLE = False
 if not _MCP_AVAILABLE:

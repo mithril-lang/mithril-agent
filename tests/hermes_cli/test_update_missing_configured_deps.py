@@ -28,6 +28,8 @@ def configured_update(source_launch, tmp_path, monkeypatch):
     pm.sync_venv(["launch-extra"], explicit=True, project_root=root)
     selected = selected_venv(root)
     site = site_packages(selected)
+    # Server catalogs can share the SDK's name without installing the SDK.
+    (site / "mcp").mkdir()
     # Reuse installed core libraries without exposing the updater's site tree:
     # neither SDK, executable .pth hooks, nor editable package finders cross over.
     for path in Path(sysconfig.get_path("purelib")).iterdir():
@@ -57,7 +59,8 @@ def configured_update(source_launch, tmp_path, monkeypatch):
             "source_build.build_source_tui = lambda *args, **kwargs: None\n"
             "source_build.build_source_web = lambda *args, **kwargs: None\n"
             f"source_build.build_update_products(Path({str(root)!r}), desktop=False)\n"
-            "print('TARGET=' + json.dumps({'prefix': sys.prefix, 'python': sys.executable}))\n"
+            "from tools.mcp_tool import _MCP_AVAILABLE\n"
+            "print('TARGET=' + json.dumps({'prefix': sys.prefix, 'python': sys.executable, 'mcp_available': _MCP_AVAILABLE}))\n"
         )
         subprocess.run([str(venv_python(selected)), "-c", script],
                        cwd=root, env=activation_environment(root), check=True)
@@ -88,6 +91,7 @@ def test_update_names_missing_configured_features_from_selected_child(configured
     target = json.loads(next(line.removeprefix("TARGET=") for line in out.splitlines() if line.startswith("TARGET=")))
     assert Path(target["prefix"]) == selected
     assert Path(target["python"]).parent.parent == selected
+    assert target["mcp_available"] is False
     assert runtime_facts_path(root).read_bytes() == facts
     assert not (root / ".update-incomplete").exists()
 
@@ -95,7 +99,10 @@ def test_update_names_missing_configured_features_from_selected_child(configured
     for name in ("lark_oapi", "mcp"):
         (site / f"{name}.py").write_text("# Passive dependency-probe fixture.\n", encoding="utf-8")
     build()
-    assert "fail to load them on restart" not in capfd.readouterr().out
+    out = capfd.readouterr().out
+    assert "fail to load them on restart" not in out
+    target = json.loads(next(line.removeprefix("TARGET=") for line in out.splitlines() if line.startswith("TARGET=")))
+    assert target["mcp_available"] is True
     assert runtime_facts_path(root).read_bytes() == facts
 
 

@@ -250,8 +250,11 @@ def _configured_features_missing_deps() -> list[tuple[str, str, str]]:
         import importlib.util
         from hermes_cli.config import load_config_readonly
 
-        if (load_config_readonly().get("mcp_servers") or {}) and importlib.util.find_spec("mcp") is None:
-            missing.append(("MCP servers", "Run `hermes pm install` to install MCP support.", "mcp"))
+        if load_config_readonly().get("mcp_servers"):
+            spec = importlib.util.find_spec("mcp")
+            # A checkout's mcp/ server catalog is a namespace, not the Python SDK.
+            if spec is None or spec.origin is None:
+                missing.append(("MCP servers", "Run `hermes pm install` to install MCP support.", "mcp"))
     except Exception as exc:
         logger.debug("configured-MCP dependency check skipped: %s", exc)
     return missing
