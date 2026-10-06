@@ -15,7 +15,7 @@ jobs:
     # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
     runs-on: ${{ github.repository_owner == 'mithril-lang' && 'ubuntu-latest' || 'ubuntu-latest-32-core' }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ github.repository_owner == 'mithril-lang' && 90 || 30 }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up the locked JS build toolchain
@@ -87,4 +87,9 @@ jobs:
       # not an empty run, because an empty run reports green after it checks
       # nothing.
       - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs
+        # The fork uses a standard hosted runner. Each check already starts
+        # its own compiler/test worker pool; overlapping those pools caused
+        # the unchanged channel metadata contract to exceed its 15s deadline.
+        # Queue the same complete set, still collecting every failure. Keep
+        # the larger upstream runner's existing parallel schedule unchanged.
+        run: node .github/scripts/run-workspace-checks.mjs ${{ github.repository_owner == 'mithril-lang' && '--concurrency 1' || '' }}
