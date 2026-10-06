@@ -125,3 +125,29 @@ def test_invalid_provenance_refuses_original_delete_and_no_transaction_is_refuse
     with sqlite3.connect(path) as conn:
         with pytest.raises(RuntimeError, match="transaction"):
             record_cloud_session_deletions(conn, ["root"])
+
+
+@pytest.mark.parametrize("review", [
+    {"expected_delete_ids": []},
+    {"expected_display_messages": {"root": [{"role": "user", "content": "changed"}]}},
+])
+def test_stale_review_cannot_stage_cloud_delete(tmp_path, review):
+    path = tmp_path / "state.db"
+    with SessionDB(path) as db:
+        db.create_session("root", source="test")
+        connect(db, "alice", "default", ["root"])
+        assert not db.delete_session("root", **review)
+        assert db.get_session("root") and not outbox(path)
+
+
+def test_bulk_failure_retains_every_source_and_rolls_back_every_intent(tmp_path):
+    path = tmp_path / "state.db"
+    with SessionDB(path) as db:
+        for sid in ["first", "refused"]:
+            db.create_session(sid, source="test")
+        connect(db, "alice", "default", ["first", "refused"])
+        db._execute_write(lambda conn: conn.execute("CREATE TRIGGER refuse_delete BEFORE DELETE ON sessions WHEN OLD.id='refused' BEGIN SELECT RAISE(ABORT,'retained');END"))
+        with pytest.raises(sqlite3.IntegrityError, match="retained"):
+            db.delete_sessions(["first", "refused"])
+        assert outbox(path) == {}
+        assert db.get_session("first") and db.get_session("refused")
