@@ -918,10 +918,10 @@ def cron_restore_source():
     from cron.source_restore import restore_original_store
     from hermes_cli.profiles import profile_matches_home
     try:
-        text = sys.stdin.read(80 * 1024 * 1024 + 1)
-        if len(text) > 80 * 1024 * 1024:
+        wire = sys.stdin.buffer.read(80 * 1024 * 1024 + 1)
+        if len(wire) > 80 * 1024 * 1024:
             raise ValueError("oversize")
-        value = json.loads(text)
+        value = json.loads(wire.decode("utf-8-sig"))
         if not isinstance(value, dict) or set(value) != {"owner", "profile", "operationId", "expectedVersion", "file"}:
             raise ValueError("operation")
         if not profile_matches_home(value["profile"]):

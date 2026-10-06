@@ -20,7 +20,7 @@ def _agent(max_tokens, requested_cap, **extra):
 
 
 def _tool_call_budgets(agent, attempts=4):
-    st = SimpleNamespace(agent=agent, truncated_tool_call_retries=0, is_stub=False)
+    st = SimpleNamespace(agent=agent, response=None, truncated_tool_call_retries=0, is_stub=False)
     st.done = lambda action, result=None: action
     budgets = []
     for _ in range(attempts):

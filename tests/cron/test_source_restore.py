@@ -11,6 +11,8 @@ import pytest
 
 from cron import jobs, source_restore
 
+pytestmark = pytest.mark.platforms("any")
+
 
 def fixture(home, file=None):
     path = home / "cron" / "jobs.json"
@@ -21,7 +23,7 @@ def fixture(home, file=None):
                   "unknown_job": {"retained": True}}],
         "unknown_header": {"nested": [1, None, "retained"]},
     }
-    path.write_text(json.dumps(value, ensure_ascii=False))
+    path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
     return path, value, hashlib.sha256(path.read_bytes()).hexdigest()
 
 

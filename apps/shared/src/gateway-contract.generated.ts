@@ -535,6 +535,8 @@ export interface SessionLiveInfo {
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
+  distribution?: string
+  action_contract?: string
   version?: string
   release_date?: string
   update_behind?: unknown | null
@@ -3223,6 +3225,8 @@ export interface SessionCwdSetResult {
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
+  distribution?: string
+  action_contract?: string
   version?: string
   release_date?: string
   update_behind?: unknown | null

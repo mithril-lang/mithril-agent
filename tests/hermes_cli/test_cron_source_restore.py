@@ -5,6 +5,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import pytest
+
+pytestmark = pytest.mark.platforms("any")
 
 
 def test_original_cli_restore_uses_stdin_and_refuses_another_profile(tmp_path):
@@ -13,18 +16,20 @@ def test_original_cli_restore_uses_stdin_and_refuses_another_profile(tmp_path):
         home = tmp_path / name
         path = home / "cron" / "jobs.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        original = {"jobs": [{"id": "original", "enabled": False, "state": "paused"}], "future_header": name}
-        path.write_text(json.dumps(original))
+        original = {"jobs": [{"id": "original", "enabled": False, "state": "paused"}],
+                    "future_header": name, "unicode_metadata": "日本語の元データ"}
+        path.write_text(json.dumps(original), encoding="utf-8")
         request = {"owner": "alice", "profile": "default", "operationId": "cli-" + name,
                    "expectedVersion": hashlib.sha256(path.read_bytes()).hexdigest(),
                    "file": {**original, "future_header": name + " restored"}}
-        env = {**os.environ, "HERMES_HOME": str(home)}
+        # Desktop writes UTF-8 bytes to a pipe, regardless of Windows' locale.
+        env = {**os.environ, "HERMES_HOME": str(home), "PYTHONIOENCODING": "ascii:backslashreplace"}
         # Unique native operations: a later write is a new restore, not a replay
         # of the first profile A acknowledgement.
         if name == "a" and list(path.parent.glob(".mithril-source-*.json")):
             request["operationId"] += "-second"
         result = subprocess.run([sys.executable, str(checkout / "hermes"), "cron", "source-restore"],
-            input=json.dumps(request), text=True, capture_output=True, env=env, cwd=checkout, timeout=30)
+            input=json.dumps(request, ensure_ascii=False), encoding="utf-8", capture_output=True, env=env, cwd=checkout, timeout=30)
         assert result.returncode == 0, result.stderr
         reply = json.loads(result.stdout)
         assert reply["success"] is True
@@ -33,7 +38,7 @@ def test_original_cli_restore_uses_stdin_and_refuses_another_profile(tmp_path):
         before = path.read_bytes()
         request["profile"] = "another-profile"
         refused = subprocess.run([sys.executable, str(checkout / "hermes"), "cron", "source-restore"],
-            input=json.dumps(request), text=True, capture_output=True, env=env, cwd=checkout, timeout=30)
+            input=json.dumps(request, ensure_ascii=False), encoding="utf-8", capture_output=True, env=env, cwd=checkout, timeout=30)
         assert refused.returncode == 1
         assert json.loads(refused.stdout) == {"success": False, "error": "identity"}
         assert path.read_bytes() == before
