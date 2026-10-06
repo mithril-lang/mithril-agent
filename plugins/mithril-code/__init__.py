@@ -2,31 +2,31 @@
 import json
 import sys
 from agent.secret_scope import get_secret
-from .client import call_runner, runner_url
+from .client import call_mithril, runner_url
 
 
 def register(ctx):
     def configured():
         try:
-            runner_url(ctx.get_config("runner_url"))
-            return len(get_secret("CODE_RUNNER_TOKEN", "") or "") >= 32
+            runner_url(ctx.get_config("code_service_url") or "https://code.mithril.fund")
+            return len(get_secret("MITHRIL_API_KEY", "") or "") > 0
         except (ValueError, TypeError):
             return False
 
     def invoke(action, goal=""):
-        return call_runner(ctx.get_config("runner_url"), get_secret("CODE_RUNNER_TOKEN", ""), action, goal)
+        return call_mithril(ctx.get_config("code_service_url") or "https://code.mithril.fund", get_secret("MITHRIL_API_KEY", ""), action, goal)
 
     def handler(args, **kwargs):
         return json.dumps(invoke(args.get("action", "status"), args.get("goal", "")), ensure_ascii=False)
 
     ctx.register_tool(
         name="mithril_code", toolset="mithril_code", handler=handler, check_fn=configured,
-        requires_env=["CODE_RUNNER_TOKEN"], description="Verified Mithril coding", emoji="🧩",
+        requires_env=["MITHRIL_API_KEY"], description="Verified Mithril coding", emoji="🧩",
         schema={"name": "mithril_code", "description": (
-            "Run the configured Mithril/Jev System One coding harness for a To-do completion toggle "
-            "and unfinished count, with fixed CLJK acceptance checks. Returns typed logic, source and "
+            "Run the Mithril API typed-AST System One coding harness for a To-do completion toggle "
+            "and unfinished count, with typed AST admission and 511 completion-state checks. Returns typed logic, source and "
             "measurements. UI and arbitrary repository execution are outside this proof. status checks "
-            "readiness; run performs paid model inference. Never automatically retry an unknown outcome. "
+            "readiness; run uses the Mithril inference allowance. Never automatically retry an unknown outcome. "
             "Does not save, overwrite, commit or publish files."),
             "parameters": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["status", "run"]},

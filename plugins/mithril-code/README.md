@@ -1,25 +1,9 @@
-# Mithril Code in Hermes
+# Mithril Code
 
-Hermes Agent calls the same bounded Jev/Mithril runner used by [Code](https://code.mithril.fund/). This owned plugin registers the `mithril_code` toolset and `hermes mithril-code` CLI, without changing the conversation loop or prompt during a session. Enable it through the existing plugin controls and start a new conversation with this toolset enabled.
+Enable the `mithril-code` plugin and connect the selected profile's `MITHRIL_API_KEY`. Code now uses the owned https://code.mithril.fund verification service, whose only inference endpoint is https://api.mithril.fund/v1/chat/completions with qwen/qwen3.8-27b. GitHub credentials are separate.
 
-Configure the owning profile's `config.yaml`:
+The model proposes a bounded typed AST. The verifier checks types, allowed operations, both toggle cases and all 511 vectors before deterministic CLJK emission. This is not Jev Decisions, native CLJK execution, arbitrary repository execution or generated UI. Actual model, usage and verification receipt are returned; API cost remains unmeasured. A run consumes Mithril inference and registered Code allowance. No automatic retry or alternate provider exists.
 
-```yaml
-plugins:
-  enabled: [mithril-code] # preserve any other enabled plugins
-  entries:
-    mithril-code:
-      settings:
-        runner_url: http://127.0.0.1:5184
-```
+`hermes mithril-code status` reads readiness. `hermes mithril-code run --stdin` reads bounded JSON `{ "goal": "Build a To-do app" }`. Source publication remains a separate user action.
 
-Store the existing `CODE_RUNNER_TOKEN` in that profile's secret store/.env, never YAML. Use an explicitly trusted HTTPS tunnel when the runner is on another machine; HTTP is restricted to loopback. The runner remains the existing Fund `apps/code/runner/server.mjs`; configure its trusted Mithril/NBB/classpath/policy and model credential according to its README. No runtime or model key is automatically installed, shared between profiles or inferred from another repository. A runner token grants model execution against that runner, so only authorized profiles should receive it.
-
-```sh
-hermes mithril-code status
-printf '%s' '{"goal":"Build completion toggle and remaining count"}' | hermes mithril-code run --stdin
-```
-
-`status` is a live readiness probe. `run` sends only the brief and fixed `todo` template to the authenticated runner, incurs its configured model cost, and returns verified CLJK source, typed AST and real receipts. Desktop uses this exact CLI. It neither executes uploaded repository code nor writes, commits or publishes source. Review source before saving through existing file/GitHub tools. Timeouts are uncertain and must not be automatically retried. Runner-provided verification is not remote attestation. Redirects and ambient proxies cannot forward the credential.
-
-The System One example is the finite, stage-specific typed choice sequence, followed by immutable host checks and exact AST/source replay. See the [recorded To-do case](case-study.md). This is a bounded pilot, not a claim of general coding accuracy.
+Existing `runner_url` and CODE_RUNNER_TOKEN data are retained but are not used by the new Mithril path. The legacy Python `call_runner` API remains available for compatibility; no fallback invokes it. `code_service_url` defaults to the owned Code origin. Only HTTP loopback may override it for local verification.
