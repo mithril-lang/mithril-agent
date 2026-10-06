@@ -50,6 +50,20 @@ def _read(path: Path, limit: int = _LIMIT) -> bytes | None:
         data = stream.read(limit + 1)
         after = os.fstat(stream.fileno())
         current = path.lstat()
+        if os.name == "nt":
+            # CPython #157671: Windows path stat reports birthtime as ctime,
+            # whereas descriptor stat reports ChangeTime. Compare two handles
+            # for full change metadata rather than discarding ctime protection.
+            _checked(path)
+            current_fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            try:
+                current = os.fstat(current_fd)
+                named = path.lstat()
+                if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (
+                        named.st_dev, named.st_ino, named.st_size, named.st_mtime_ns):
+                    raise ValueError("conflict")
+            finally:
+                os.close(current_fd)
         if len(data) > limit:
             raise ValueError("oversize")
         def identity(value):
@@ -92,7 +106,7 @@ def _parse(data: bytes):
 
 def _write(path: Path, text: str) -> None:
     _checked(path)
-    atomic_write_text(path, text, mode=0o600, preserve_mode=True, fsync_dir=True)
+    atomic_write_text(path, text, newline="", mode=0o600, preserve_mode=True, fsync_dir=True)
 
 
 @contextlib.contextmanager

@@ -913,15 +913,70 @@ def cron_notepad(args) -> int:
         return 1
 
 
+def _read_cron_source_request(limit):
+    """UTF-8 native wire; reject duplicate fields and non-finite values rather than losing data."""
+    wire = sys.stdin.buffer.read(limit + 1)
+    if len(wire) > limit:
+        raise ValueError("oversize")
+
+    def fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("operation")
+            result[key] = value
+        return result
+
+    def invalid_constant(_value):
+        raise ValueError("operation")
+
+    return json.loads(wire.decode("utf-8-sig"), object_pairs_hook=fields,
+                      parse_constant=invalid_constant)
+
+
+def cron_prepare_source():
+    """Read-only original parser bridge, bound to the active profile and configured timezone."""
+    from cron.jobs import prepare_job
+    from hermes_cli.profiles import profile_matches_home
+    from hermes_time import get_timezone
+    try:
+        value = _read_cron_source_request(20 * 1024 * 1024)
+        if not isinstance(value, dict) or set(value) != {"owner", "profile", "operationId", "timeZone", "input"}:
+            raise ValueError("operation")
+        if any(not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", value[key])
+               for key in ("owner", "profile", "operationId")) or len(value["profile"]) > 64:
+            raise ValueError("identity")
+        if not profile_matches_home(value["profile"]):
+            raise ValueError("identity")
+        zone = get_timezone()
+        if zone is None or zone.key != value["timeZone"]:
+            raise ValueError("timezone")
+        fields = value["input"]
+        if (not isinstance(fields, dict) or "schedule" not in fields
+                or set(fields) - {"schedule", "prompt", "name", "deliver"}
+                or not isinstance(fields["schedule"], str)
+                or any(item is not None and (not isinstance(item, str) or "\0" in item)
+                       for item in fields.values())):
+            raise ValueError("operation")
+        # No save, registration, receipt file, execution claim or activation is performed.
+        job = prepare_job(prompt=fields.get("prompt"), schedule=fields["schedule"],
+                          name=fields.get("name"), deliver=fields.get("deliver"))
+        preparation = {key: value[key] for key in ("owner", "profile", "operationId", "timeZone", "input")}
+        preparation["job"] = job
+        print(json.dumps({"success": True, "preparation": preparation}))
+        return 0
+    except Exception as error:
+        code = str(error) if str(error) in {"identity", "timezone", "operation", "oversize"} else "invalid_preparation"
+        print(json.dumps({"success": False, "error": code}))
+        return 1
+
+
 def cron_restore_source():
     """Native stdin bridge. No filesystem path or job body enters argv or errors."""
     from cron.source_restore import restore_original_store
     from hermes_cli.profiles import profile_matches_home
     try:
-        wire = sys.stdin.buffer.read(80 * 1024 * 1024 + 1)
-        if len(wire) > 80 * 1024 * 1024:
-            raise ValueError("oversize")
-        value = json.loads(wire.decode("utf-8-sig"))
+        value = _read_cron_source_request(80 * 1024 * 1024)
         if not isinstance(value, dict) or set(value) != {"owner", "profile", "operationId", "expectedVersion", "file"}:
             raise ValueError("operation")
         if not profile_matches_home(value["profile"]):
@@ -940,6 +995,7 @@ def cron_restore_source():
 _CRON_SUBCOMMANDS = {
     "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
     "source-restore": lambda a: cron_restore_source(),
+    "source-prepare": lambda a: cron_prepare_source(),
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),

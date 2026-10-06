@@ -434,3 +434,21 @@ agent or transfer execution authority. Board-root resolution is unchanged.
 Desktop adoption/replacement must use this same lock; older installed writers
 and installer pins require separate migration and live qualification. This source
 change alone does not qualify installed cloud metadata replacement.
+
+## Original source preparation and restoration
+
+`cron source-prepare` accepts a bounded UTF-8 stdin request bound to owner,
+profile, operation ID and the configured IANA timezone. It calls the same
+`prepare_job` builder used by original `create_job`, retaining the original
+schedule grammar and metadata without writing jobs, claiming occurrences or
+granting execution authority. Duplicate fields and unexpected input authority
+are refused. A successful preparation is data, not a scheduled execution.
+
+`cron source-restore` uses the original jobs lock, occurrence fences and source
+CAS. Its atomic text writer opts out of host newline conversion so the receipt
+version describes the actual UTF-8 bytes on Windows as well as POSIX. Windows
+final source checks compare descriptor change times with another descriptor,
+while checking that it still names the same path identity, size and modification
+time. This preserves late-edit rejection despite Windows path and descriptor
+ctime differences. These source ports still require installer pins, cloud
+resource binding and execution ownership before complete synchronization.

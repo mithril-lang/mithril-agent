@@ -195,3 +195,35 @@ def test_real_firing_process_defers_restore_even_before_it_stamps_a_claim(tmp_pa
         assert json.loads(path.read_bytes()) == target
     finally:
         child.communicate(timeout=10)
+
+
+def test_windows_handle_times_are_compared_without_losing_late_change_detection(tmp_path, monkeypatch):
+    """Real files, with Windows' different path/descriptor ctime representations."""
+    from types import SimpleNamespace
+    path, _, _ = fixture(tmp_path / "source")
+    original = path.read_bytes()
+
+    class HandleTimes:
+        name = "nt"
+        calls = 0
+        mutate = False
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def fstat(self, fd):
+            self.calls += 1
+            if self.mutate and self.calls == 3:
+                path.write_bytes(original + b"\n ")
+            actual = os.fstat(fd)
+            return SimpleNamespace(st_dev=actual.st_dev, st_ino=actual.st_ino,
+                st_size=actual.st_size, st_mtime_ns=actual.st_mtime_ns,
+                st_ctime_ns=actual.st_ctime_ns + 1000000, st_mode=actual.st_mode)
+
+    proxy = HandleTimes()
+    monkeypatch.setattr(source_restore, "os", proxy)
+    assert source_restore._read(path) == original
+    proxy.calls, proxy.mutate = 0, True
+    with pytest.raises(ValueError, match="conflict"):
+        source_restore._read(path)
+    assert path.read_bytes() == original + b"\n "

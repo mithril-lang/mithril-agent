@@ -22,6 +22,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     cron_subparsers.add_parser("source-restore",
         help="Restore a locally bound original schedule source from stdin (Desktop synchronization)")
+    cron_subparsers.add_parser("source-prepare",
+        help="Prepare an original schedule record from stdin without saving or executing it")
 
     cron_create = cron_subparsers.add_parser(
         "create", aliases=["add"], help="Create a scheduled job")

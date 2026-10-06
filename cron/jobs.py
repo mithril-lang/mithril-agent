@@ -1859,7 +1859,67 @@ def create_job(
     pinned: bool = False,
     interpreter: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a new cron job and return the stored record.
+    """Prepare through the original parser, then persist exactly one original record."""
+    job = prepare_job(
+        prompt=prompt,
+        schedule=schedule,
+        name=name,
+        repeat=repeat,
+        deliver=deliver,
+        origin=origin,
+        skill=skill,
+        skills=skills,
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        script=script,
+        context_from=context_from,
+        enabled_toolsets=enabled_toolsets,
+        workdir=workdir,
+        no_agent=no_agent,
+        attach_to_session=attach_to_session,
+        monitor_script=monitor_script,
+        monitor_url=monitor_url,
+        reasoning_effort=reasoning_effort,
+        failure_deliver=failure_deliver,
+        paused=paused,
+        paused_reason=paused_reason,
+        pinned=pinned,
+        interpreter=interpreter,
+    )
+    with _jobs_lock():
+        save_jobs(load_jobs() + [job])
+    return job
+
+
+def prepare_job(
+    prompt: Optional[str],
+    schedule: str,
+    name: Optional[str] = None,
+    repeat: Optional[int] = None,
+    deliver: Optional[str] = None,
+    origin: Optional[Dict[str, Any]] = None,
+    skill: Optional[str] = None,
+    skills: Optional[List[str]] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    script: Optional[str] = None,
+    context_from: Optional[Union[str, List[str]]] = None,
+    enabled_toolsets: Optional[List[str]] = None,
+    workdir: Optional[str] = None,
+    no_agent: bool = False,
+    attach_to_session: Optional[bool] = None,
+    monitor_script: Optional[str] = None,
+    monitor_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    failure_deliver: Optional[str] = None,
+    paused: bool = False,
+    paused_reason: Optional[str] = None,
+    pinned: bool = False,
+    interpreter: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Prepare a complete original record without writing the store or registering execution.
 
     deliver defaults to "origin" when ``origin`` is given, else "local"; repeat None = forever.
     script: stdout is injected as prompt context, or with ``no_agent=True`` IS the job (stdout
@@ -1958,8 +2018,6 @@ def create_job(
         if value is not None:
             job[key] = value
 
-    with _jobs_lock():
-        save_jobs(load_jobs() + [job])
     return job
 
 
