@@ -1,5 +1,5 @@
 name: mithril-code
-version: "0.2.0"
+version: "0.2.1"
 description: "Mithril API bounded System One coding: typed assembly, fixed acceptance checks and source receipts."
 author: Mithril
 provides_tools:
