@@ -411,3 +411,26 @@ hermes cron remove <job_id>         # Delete a job
 - [Cron Feature Guide](../user-guide/features/cron.md)
 - [Gateway Internals](./gateway-internals.md)
 - [Agent Loop Internals](./agent-loop.md)
+
+
+## Kanban board display metadata transactions
+
+`hermes_cli.kanban_db.write_board_metadata` reads and writes the original
+`board.json` under `hermes_cli.kanban_metadata_lock.board_metadata_lock`.
+The permanent `.board-metadata.lock` inode beside that file is the shared
+read/modify/write boundary for native writers and the Desktop cloud adapter.
+A lock timeout refuses the edit; it never permits an unlocked fallback.
+
+The writer preserves unmentioned fields, native work directories, project
+associations, creation timestamps and existing file permissions. It uses the
+existing `utils.atomic_write_text` with file and directory synchronization.
+Malformed originals are retained instead of replaced with synthesized defaults.
+Read-only views continue to synthesize missing defaults without creating files.
+
+A durable `mithril_board_pending` row in the original board's SQLite database
+refuses subsequent native metadata edits until the exact cloud operation recovers.
+It does not run a task, replay history, change the selected board, dispatch an
+agent or transfer execution authority. Board-root resolution is unchanged.
+Desktop adoption/replacement must use this same lock; older installed writers
+and installer pins require separate migration and live qualification. This source
+change alone does not qualify installed cloud metadata replacement.
