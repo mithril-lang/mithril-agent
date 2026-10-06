@@ -913,9 +913,33 @@ def cron_notepad(args) -> int:
         return 1
 
 
+def cron_restore_source():
+    """Native stdin bridge. No filesystem path or job body enters argv or errors."""
+    from cron.source_restore import restore_original_store
+    from hermes_cli.profiles import profile_matches_home
+    try:
+        text = sys.stdin.read(80 * 1024 * 1024 + 1)
+        if len(text) > 80 * 1024 * 1024:
+            raise ValueError("oversize")
+        value = json.loads(text)
+        if not isinstance(value, dict) or set(value) != {"owner", "profile", "operationId", "expectedVersion", "file"}:
+            raise ValueError("operation")
+        if not profile_matches_home(value["profile"]):
+            raise ValueError("identity")
+        receipt = restore_original_store(owner=value["owner"], profile=value["profile"],
+            operation_id=value["operationId"], expected_version=value["expectedVersion"], file=value["file"])
+        print(json.dumps({"success": True, "receipt": receipt}))
+        return 0
+    except Exception as error:
+        code = str(error) if str(error) in {"identity", "operation", "inventory", "conflict", "busy", "runtime", "ownership", "unsafe", "oversize"} else "unavailable"
+        print(json.dumps({"success": False, "error": code}))
+        return 1
+
+
 # Late-bound lambdas keep module-level monkeypatching working; list/status/runs return None -> 0.
 _CRON_SUBCOMMANDS = {
     "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
+    "source-restore": lambda a: cron_restore_source(),
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),

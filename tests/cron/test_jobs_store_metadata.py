@@ -4,6 +4,17 @@ import json
 from cron.jobs import load_jobs, save_jobs, use_cron_store
 
 
+def test_windows_bom_source_keeps_original_metadata_through_normal_save(tmp_path):
+    path = tmp_path / "cron" / "jobs.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"jobs": [], "original_metadata": {"retained": [1, None, "日本語"]}}),
+                    encoding="utf-8-sig")
+    with use_cron_store(tmp_path):
+        save_jobs(load_jobs())
+    assert json.loads(path.read_bytes())["original_metadata"] == {"retained": [1, None, "日本語"]}
+    assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
 def test_original_store_metadata_survives_scoped_a_b_a_writes(tmp_path):
     homes = [tmp_path / "a", tmp_path / "b"]
     for index, home in enumerate(homes):

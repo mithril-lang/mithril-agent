@@ -253,8 +253,14 @@ def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
                     return False
                 time.sleep(0.1)
     if msvcrt is not None:
-        getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
-        return True
+        try:
+            mode = getattr(msvcrt, "LK_NBLCK" if timeout <= 0 else "LK_LOCK")
+            getattr(msvcrt, "locking")(lock_fd.fileno(), mode, 1)
+            return True
+        except (OSError, IOError):
+            if timeout <= 0:
+                return False
+            raise
     return None
 
 
@@ -340,7 +346,7 @@ def _jobs_lock(*, require_cross_process: bool = False):
 
 
 @contextlib.contextmanager
-def _fire_job_lock(job_id: str):
+def _fire_job_lock(job_id: str, *, wait: bool = True):
     """Serialize one job's owner mutations and external side effects. Unlike the global jobs lock
     this may be held across network delivery; scoped to one profile + job so unrelated jobs keep
     progressing. Fails closed when cross-process locking is unavailable."""
@@ -349,7 +355,9 @@ def _fire_job_lock(job_id: str):
     with _fire_fence_locks_guard:
         local_lock = _fire_fence_locks.setdefault(lock_key, threading.RLock())
 
-    if not local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS):
+    acquired_local = (local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS)
+                      if wait else local_lock.acquire(blocking=False))
+    if not acquired_local:
         logger.error("Timed out waiting for local fire fence %s; failing closed", lock_key)
         yield False
         return
@@ -370,7 +378,7 @@ def _fire_job_lock(job_id: str):
         try:
             lock_fd = open(lock_path, "a+", encoding="utf-8")
             lock_fd.seek(0)
-            result = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS)
+            result = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS if wait else 0)
             if result is None:  # pragma: no cover - supported platforms provide one backend
                 logger.error("No cross-process lock backend for cron fire fence")
             elif not result:
@@ -1554,7 +1562,7 @@ def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
     # authoritative here; retain every other existing object-store field.
     payload: Dict[str, Any] = {}
     try:
-        original = json.loads(jobs_file.read_text(encoding="utf-8"))
+        original = json.loads(jobs_file.read_text(encoding="utf-8-sig"))
         if isinstance(original, dict):
             payload.update(original)
     except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
