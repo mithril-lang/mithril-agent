@@ -18,13 +18,13 @@ def runner():
         def log_message(self, *args):
             return
         def do_GET(self):
-            requests.append((self.path, self.headers.get("Authorization"), None))
+            requests.append((self.path, self.headers.get("X-Mithril-Token"), None))
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(json.dumps({"ready": True, "mode": "local-jeV-mithril-harness"}).encode())
+            self.wfile.write(json.dumps({"ready": True, "runner_mode": "mithril-api-typed-ast"}).encode())
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            requests.append((self.path, self.headers.get("Authorization"), body))
+            requests.append((self.path, self.headers.get("X-Mithril-Token"), body))
             if body["goal"] == "redirect":
                 self.send_response(307)
                 self.send_header("Location", "/credential-leak")
@@ -33,7 +33,7 @@ def runner():
             self.send_response(200)
             self.end_headers()
             result = {"format": "mithril.code-project/v1", "verified": body["goal"] != "unverified",
-                      "metrics": {"receipt-id": "synthetic-adapter-test"}, "logic": {},
+                      "metrics": {"receipt-id": "synthetic-adapter-test", "verification-passed": True, "endpoint": "https://api.mithril.fund/v1/chat/completions"}, "logic": {},
                       "files": {"src/todo/interaction.cljk": "toggle", "src/todo/summary.cljk": "count"}}
             self.wfile.write(json.dumps(result).encode())
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -55,12 +55,12 @@ def test_discovery_and_real_http_are_profile_scoped(tmp_path):
         for home in homes:
             home.mkdir()
             (home / "config.yaml").write_text(
-                "plugins:\n  enabled: [mithril-code]\n  entries:\n    mithril-code:\n      settings:\n        runner_url: " + url + "\n")
+                "plugins:\n  enabled: [mithril-code]\n  entries:\n    mithril-code:\n      settings:\n        code_service_url: " + url + "\n")
         set_multiplex_active(True)
         try:
             for home, credential in [(homes[0], "a" * 32), (homes[1], "b" * 32), (homes[0], "a" * 32)]:
                 ht = set_hermes_home_override(home)
-                st = set_secret_scope({"CODE_RUNNER_TOKEN": credential}, profile_home=str(home))
+                st = set_secret_scope({"MITHRIL_API_KEY": credential}, profile_home=str(home))
                 try:
                     manager = PluginManager()
                     manager.discover_and_load()
@@ -70,8 +70,9 @@ def test_discovery_and_real_http_are_profile_scoped(tmp_path):
                     assert json.loads(entry.handler({"action": "status"}))["ready"]
                     result = json.loads(entry.handler({"action": "run", "goal": "bounded todo"}))
                     assert result["ok"] and result["result"]["verified"]
-                    assert calls[-1][1] == "Bearer " + credential
-                    assert calls[-1][2] == {"template": "todo", "goal": "bounded todo"}
+                    assert calls[-1][1] == credential
+                    assert calls[-1][2]["goal"] == "bounded todo"
+                    assert calls[-1][2]["request_id"]
                     command = next(c for c in manager._cli_commands.values() if c["name"] == "mithril-code")
                     assert command["handler_fn"] is not None
                 finally:
@@ -81,11 +82,11 @@ def test_discovery_and_real_http_are_profile_scoped(tmp_path):
             home = homes[0]
             command = [sys.executable, str(Path(__file__).resolve().parents[2] / "hermes"), "mithril-code", "run", "--stdin"]
             process = subprocess.run(command, input=json.dumps({"goal": "cli todo"}), text=True,
-                env={"HERMES_HOME": str(home), "CODE_RUNNER_TOKEN": "a" * 32, "PATH": "/usr/bin:/bin"},
+                env={"HERMES_HOME": str(home), "MITHRIL_API_KEY": "a" * 32, "PATH": "/usr/bin:/bin"},
                 capture_output=True, timeout=20)
             assert process.returncode == 0, process.stderr
             assert json.loads(process.stdout.strip().split("\n")[-1])["ok"]
-            assert calls[-1][2] == {"template": "todo", "goal": "cli todo"}
+            assert calls[-1][2]["goal"] == "cli todo"
         finally:
             set_multiplex_active(False)
 
@@ -99,10 +100,10 @@ def test_redirect_unverified_result_and_invalid_goal_do_not_run_again(tmp_path):
     spec.loader.exec_module(client)
     with runner() as (url, calls):
         for goal in ("redirect", "unverified"):
-            result = client.call_runner(url, "c" * 32, "run", goal)
+            result = client.call_mithril(url, "c" * 32, "run", goal)
             assert result["ok"] is False
         assert len(calls) == 2
         assert not any(path == "/credential-leak" for path, _, _ in calls)
-        assert not client.call_runner(url, "c" * 32, "run", "")["ok"]
-        assert not client.call_runner("http://example.com", "c" * 32, "run", "todo")["ok"]
+        assert not client.call_mithril(url, "c" * 32, "run", "")["ok"]
+        assert not client.call_mithril("http://example.com", "c" * 32, "run", "todo")["ok"]
         assert len(calls) == 2

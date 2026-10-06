@@ -1,13 +1,18 @@
 name: mithril-code
-version: "0.1.0"
-description: "Mithril/Jev bounded System One coding: typed assembly, fixed acceptance checks and source receipts."
+version: "0.2.0"
+description: "Mithril API bounded System One coding: typed assembly, fixed acceptance checks and source receipts."
 author: Mithril
 provides_tools:
   - mithril_code
 requires_env:
-  - CODE_RUNNER_TOKEN
+  - MITHRIL_API_KEY
 config_schema:
   runner_url:
     type: str
     required: false
     description: "Explicitly trusted runner origin; HTTPS or HTTP loopback only."
+
+  code_service_url:
+    type: str
+    required: false
+    description: "Owned Code verification service (default https://code.mithril.fund); HTTP loopback allowed for local tests. Inference stays on api.mithril.fund."
