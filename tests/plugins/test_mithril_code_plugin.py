@@ -18,11 +18,13 @@ def runner():
         def log_message(self, *args):
             return
         def do_GET(self):
+            assert self.headers.get("User-Agent") == "Mithril-Code-Hermes"
             requests.append((self.path, self.headers.get("X-Mithril-Token"), None))
             self.send_response(200)
             self.end_headers()
             self.wfile.write(json.dumps({"ready": True, "runner_mode": "mithril-api-typed-ast"}).encode())
         def do_POST(self):
+            assert self.headers.get("User-Agent") == "Mithril-Code-Hermes"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.path, self.headers.get("X-Mithril-Token"), body))
             if body["goal"] == "redirect":

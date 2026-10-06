@@ -92,7 +92,7 @@ def call_mithril(url, token, action, goal=""):
     except ValueError as error:
         return {"ok": False, "error": str(error)}
     body = json.dumps({"template": "todo", "goal": goal, "request_id": str(uuid.uuid4())}).encode() if action == "run" else None
-    headers = {"Content-Type": "application/json", "Origin": "https://code.mithril.fund"}
+    headers = {"Content-Type": "application/json", "Origin": "https://code.mithril.fund", "User-Agent": "Mithril-Code-Hermes"}
     if body:
         headers["X-Mithril-Token"] = token
     request = Request(url + ("/api/runs" if body else "/api/status"), data=body, headers=headers)
