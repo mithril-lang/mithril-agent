@@ -1,0 +1,13 @@
+name: mithril-code
+version: "0.1.0"
+description: "Mithril/Jev bounded System One coding: typed assembly, fixed acceptance checks and source receipts."
+author: Mithril
+provides_tools:
+  - mithril_code
+requires_env:
+  - CODE_RUNNER_TOKEN
+config_schema:
+  runner_url:
+    type: str
+    required: false
+    description: "Explicitly trusted runner origin; HTTPS or HTTP loopback only."

@@ -522,3 +522,7 @@ Long-form background lives in `website/docs/developer-guide/` (agent-loop, promp
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,
 session-storage, ...). Workflow rules (PR/issue/review/salvage process) live in the
 `hermes-agent-dev` skill, not here.
+
+## Mithril Code integration (2026-10-06)
+
+The owned `plugins/mithril-code` plugin exposes the existing Code runner through a profile-scoped `mithril_code` toolset and `hermes mithril-code` CLI. It does not change the core conversation loop. Runner origin is explicit plugin settings; CODE_RUNNER_TOKEN is scoped to its owner. CLI briefs use stdin, credentials never appear in tool results, redirects are refused and unknown runs are not retried. Generated source is returned for review without file writes or GitHub publication. This operator integration is separate from Fund PR492's registered free quota/replay path and does not claim that unpublished trial is available. Evidence and limitations: `plugins/mithril-code/README.md` and `case-study.md`.
