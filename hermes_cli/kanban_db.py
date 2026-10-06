@@ -590,26 +590,32 @@ def write_board_metadata(
     "" = clear (``project_id`` is not validated here)."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
-    meta = read_board_metadata(slug)
-    # db_path is derived on every read; never persist it into board.json.
-    meta.pop("db_path", None)
-    if name is not None:
-        meta["name"] = str(name).strip() or _default_board_display_name(slug)
-    for key, value in (("description", description), ("icon", icon), ("color", color)):
-        if value is not None:
-            meta[key] = str(value)
-    if archived is not None:
-        meta["archived"] = bool(archived)
-    for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
-        if value is not None:
-            meta[key] = str(value) if value else None
-    if not meta.get("created_at"):
-        meta["created_at"] = int(time.time())
+    from hermes_cli.kanban_metadata_lock import board_metadata_lock
+    from utils import atomic_write_text
+
     path = board_metadata_path(slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
-    )
+    with board_metadata_lock(path, kanban_db_path(slug)):
+        # Read-only views can synthesize defaults; a writer must retain corrupt originals.
+        if path.exists():
+            original = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(original, dict):
+                raise ValueError("Invalid board metadata; original file retained")
+        meta = read_board_metadata(slug)
+        # db_path is derived on every read; never persist it into board.json.
+        meta.pop("db_path", None)
+        if name is not None:
+            meta["name"] = str(name).strip() or _default_board_display_name(slug)
+        for key, value in (("description", description), ("icon", icon), ("color", color)):
+            if value is not None:
+                meta[key] = str(value)
+        if archived is not None:
+            meta["archived"] = bool(archived)
+        for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
+            if value is not None:
+                meta[key] = str(value) if value else None
+        if not meta.get("created_at"):
+            meta["created_at"] = int(time.time())
+        atomic_write_text(path, json.dumps(meta, indent=2, ensure_ascii=False) + "\n", preserve_mode=True, fsync_dir=True)
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
