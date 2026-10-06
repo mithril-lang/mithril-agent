@@ -551,6 +551,28 @@ db.delete_session("sess_abc123")
 ```
 
 
+## Mithril cloud deletion receipts
+
+When Desktop has already linked an original session to an authenticated cloud
+owner and profile, Agent `delete_session` and `delete_sessions` retain its
+delete intent in the same SQLite transaction. Cascaded delegate sessions get
+their own intents; unselected branches are retained. Active-write guards and
+expected-transcript checks run before any intent is staged. A failed delete
+rolls back the intents and original session changes together.
+
+`mithril_history_source_links` supplies provenance and
+`mithril_history_source_deletions` is Desktop's durable receipt outbox. Agent
+never invents a cloud owner, changes credentials, or performs a network request.
+A pending operation keeps its original ID and revision; deleting a restored
+source after an acknowledged receipt creates a fresh intent. Desktop remains
+responsible for owner-scoped publication, compare-and-swap and receipt admission.
+
+This integration covers explicit single/bulk deletion and delegate cascades.
+Automatic empty-session cleanup, retention pruning and structural repairs are
+not converted into cloud deletion by this change. Stores without a Desktop
+source mapping retain their original behavior.
+
+
 ## Database Location
 
 Default path: `get_hermes_home() / "state.db"` — `~/.hermes/state.db` for the
