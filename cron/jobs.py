@@ -1535,11 +1535,24 @@ def _unlink_quiet(path: Optional[str]) -> None:
 
 def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
     """Serialize the store payload to a fsynced temp file next to *jobs_file*; return its path."""
+    # A normal pause/tick/edit must not discard metadata restored by Desktop
+    # synchronization (or a newer writer). Jobs and the write timestamp remain
+    # authoritative here; retain every other existing object-store field.
+    payload: Dict[str, Any] = {}
+    try:
+        original = json.loads(jobs_file.read_text(encoding="utf-8"))
+        if isinstance(original, dict):
+            payload.update(original)
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        # Initial saves and explicit corrupt-store repair still work. The
+        # existing merge guard refuses corruption before staging normal saves.
+        pass
+    payload.update(jobs=jobs, updated_at=_hermes_now().isoformat())
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
-                {"jobs": jobs, "updated_at": _hermes_now().isoformat()},
+                payload,
                 f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
