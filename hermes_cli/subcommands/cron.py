@@ -29,6 +29,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_subparsers.add_parser("source-run",
         help="Run an exact original source version once per retained stdin request")
 
+    cron_subparsers.add_parser("source-run-status",
+        help="Inspect a retained stdin request without claiming or running it")
+
     cron_create = cron_subparsers.add_parser(
         "create", aliases=["add"], help="Create a scheduled job")
     cron_create.add_argument("schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'")

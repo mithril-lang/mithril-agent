@@ -492,3 +492,14 @@ source refusal, concurrent replay and killing the caller after an actual harmles
 script effect. This local port still needs the selected-device request broker,
 Native adapter, cloud authority verification and installer provisioning before
 it establishes Web execution or production readiness.
+
+`hermes cron source-run-status` inspects the same exact bounded request through a
+read-only SQLite connection. A missing ledger/table/request returns `absent`
+without creating a marker or execution. Matching rows return the retained
+`unknown`, `rejected` or `completed` status even after the jobs file changes.
+Reused input refuses. Inspection never calls the original claim or runner;
+`absent` is evidence of no retained local result, not permission to dispatch.
+Real CLI tests check absent and completed inspection across A/B/A homes, reject
+altered request identity, and inspect an active then interrupted script without
+another effect. Native recovery integration and production publication remain
+separate requirements.

@@ -1017,17 +1017,17 @@ def cron_restore_source():
         return 1
 
 
-def cron_run_source():
+def cron_run_source(inspect_only=False):
     """Bounded native wire; original output stays in the original execution files."""
     from contextlib import redirect_stdout
-    from cron.source_run import run_original_request
+    from cron.source_run import inspect_original_request, run_original_request
     from hermes_cli.profiles import profile_matches_home
     try:
         value = _read_cron_source_request(4096)
         if not isinstance(value, dict) or not profile_matches_home(value.get("profile")):
             raise ValueError("identity")
         with open(os.devnull, "w", encoding="utf-8") as sink, redirect_stdout(sink):
-            receipt = run_original_request(value)
+            receipt = (inspect_original_request if inspect_only else run_original_request)(value)
         print(json.dumps({"success": True, "receipt": receipt}))
         return 0
     except Exception as error:
@@ -1043,6 +1043,7 @@ _CRON_SUBCOMMANDS = {
     "source-prepare": lambda a: cron_prepare_source(),
     "source-transition": lambda a: cron_prepare_transition(),
     "source-run": lambda a: cron_run_source(),
+    "source-run-status": lambda a: cron_run_source(inspect_only=True),
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),

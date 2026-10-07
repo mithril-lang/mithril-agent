@@ -6,12 +6,13 @@ grant execution ownership: the original runner's execution policy still applies.
 import hashlib
 import json
 import re
+import sqlite3
 
 from cron.executions import _transaction
 from cron.source_restore import OriginalSourceVersionMismatch, _IDENTITY
 
 
-def run_original_request(request: dict) -> dict:
+def _request_identity(request: dict) -> tuple[str, str]:
     keys = {"owner", "profile", "operationId", "jobId", "expectedVersion"}
     if not isinstance(request, dict) or set(request) != keys:
         raise ValueError("operation")
@@ -23,7 +24,34 @@ def run_original_request(request: dict) -> dict:
         raise ValueError("operation")
     fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
-    operation = request["operationId"]
+    return request["operationId"], fingerprint
+
+
+def inspect_original_request(request: dict) -> dict:
+    """Read a retained result without creating a marker, claim or execution."""
+    operation, fingerprint = _request_identity(request)
+    from cron import executions
+    from hermes_constants import get_hermes_home
+    path = executions.EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+    if not path.exists():
+        return {**request, "status": "absent"}
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='original_run_requests'").fetchone() is None:
+            return {**request, "status": "absent"}
+        row = conn.execute("SELECT fingerprint,status FROM original_run_requests WHERE operation_id=?", (operation,)).fetchone()
+        if row is None:
+            return {**request, "status": "absent"}
+        if row[0] != fingerprint or row[1] not in {"unknown", "rejected", "completed"}:
+            raise ValueError("operation")
+        return {**request, "status": row[1]}
+    finally:
+        conn.close()
+
+
+def run_original_request(request: dict) -> dict:
+    operation, fingerprint = _request_identity(request)
     with _transaction() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS original_run_requests (
             operation_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
