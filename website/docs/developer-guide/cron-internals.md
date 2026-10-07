@@ -452,3 +452,10 @@ while checking that it still names the same path identity, size and modification
 time. This preserves late-edit rejection despite Windows path and descriptor
 ctime differences. These source ports still require installer pins, cloud
 resource binding and execution ownership before complete synchronization.
+
+Windows process-containment qualification checks the actual primary thread's
+kernel suspend count before job assignment, using its identity returned by the
+real CreateProcess call. The temporary inspection increment is restored without
+resuming execution. Whole-process status is not a substitute for this boundary:
+loader threads may have different states. Assignment/resume cancellation still
+must leave no executed child, live process or leaked process/job handle.
