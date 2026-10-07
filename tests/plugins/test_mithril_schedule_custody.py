@@ -22,6 +22,70 @@ def client():
     return module
 
 
+def test_bound_original_script_requires_fresh_start_and_records_completion(tmp_path, monkeypatch):
+    import hashlib
+    from cron import jobs, scheduler, executions
+    from hermes_cli.plugins import PluginManager
+    with server() as (url, calls, mode):
+        for name, secret_char in [('a', 'a'), ('b', 'b'), ('a', 'a')]:
+            home = tmp_path / name
+            home.mkdir(exist_ok=True)
+            (home / 'scripts').mkdir(exist_ok=True)
+            effect = home / 'effect.txt'
+            expected_effect = (effect.read_text() if effect.exists() else '') + 'x'
+            mode['value'] = 'normal'
+            (home / 'scripts' / 'one.sh').write_text('printf x >> "' + str(effect) + '"\necho done\n')
+            (home / '.env').write_text('MITHRIL_API_KEY=mf_' + secret_char*32 + '\n')
+            (home / 'config.yaml').write_text('plugins:\n  enabled: [mithril-schedules]\n  entries:\n    mithril-schedules:\n      settings:\n        api_origin: ' + url + '\n')
+            ht = set_hermes_home_override(home)
+            manager = PluginManager()
+            try:
+                manager.discover_and_load()
+                monkeypatch.setattr('hermes_cli.plugins._delivery_manager', lambda: manager)
+                with jobs.use_cron_store(home):
+                    job = jobs.create_job(prompt=None, schedule='every 5m', script='one.sh', no_agent=True, deliver='local')
+                    instant = '2026-10-07T00:17:00.000001+00:00'
+                    attempt = executions.create_execution(job['id'], source='direct', scheduled_instant=instant)
+                    job['execution_id'] = attempt['id']
+                    job['_scheduled_instant'] = instant
+                    fingerprint = {k: v for k, v in job.items() if k not in {'execution_id', '_scheduled_instant', 'run_claim', 'fire_claim', 'pending_slot'}}
+                    digest = hashlib.sha256(json.dumps(fingerprint, sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+                    job['_execution_binding'] = {'policy': 'mithril-schedules', 'owner': 'alice', 'jobDigest': digest,
+                        'occurrence': {'profile': 'default', 'jobId': job['id'], 'operationId': attempt['id'],
+                                       'scheduledInstant': instant, 'sourceRevision': 1, 'sourceDigest': 'a'*64, 'authorityRevision': 1}}
+                    first = len(calls)
+                    assert scheduler._run_guarded_job_body(job)
+                    assert effect.read_text() == expected_effect
+                    assert [c[2]['action'] for c in calls[first:]] == ['claim', 'transition', 'transition']
+                    assert calls[-1][2]['to'] == 'completed'
+                    assert all(c[1] == 'Bearer mf_' + secret_char*32 for c in calls[first:])
+                    assert executions.get_execution(attempt['id'])['status'] == 'completed'
+                    mode['value'] = 'replayed'
+                    before = len(calls)
+                    assert not scheduler._run_guarded_job_body(job)
+                    assert effect.read_text() == expected_effect
+                    assert calls[before + 1][2]['to'] == 'running'
+                    assert calls[-1][2]['to'] == 'unknown'
+                    for behavior in ['retained', 'lost-start', 'foreign']:
+                        mode['value'] = behavior
+                        before = len(calls)
+                        assert not scheduler._run_guarded_job_body(job)
+                        assert effect.read_text() == expected_effect
+                        if behavior == 'lost-start':
+                            assert [c[2]['action'] for c in calls[before:]] == ['claim', 'transition', 'transition']
+                            assert calls[-1][2]['to'] == 'unknown'
+                        else:
+                            assert len(calls) == before + 1
+                    manager.unload()
+                    before = len(calls)
+                    assert not scheduler._run_guarded_job_body(job)
+                    assert len(calls) == before
+                    assert effect.read_text() == expected_effect
+            finally:
+                manager.unload()
+                reset_hermes_home_override(ht)
+
+
 @contextmanager
 def server():
     calls = []
@@ -32,7 +96,7 @@ def server():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             calls.append((self.path, self.headers.get('Authorization'), body))
-            if mode['value'] == 'lost':
+            if mode['value'] == 'lost' or (mode['value'] == 'lost-start' and body.get('to') == 'running'):
                 self.close_connection = True
                 return
             if mode['value'] == 'redirect':
@@ -47,7 +111,7 @@ def server():
             else:
                 value['operationId'] = body['operationId']
                 if action == 'claim':
-                    value.update(status='admitted', fresh=True)
+                    value.update(status='admitted', fresh=mode['value'] != 'retained')
                 else:
                     value['changed'] = mode['value'] != 'replayed'
             if mode['value'] == 'foreign':

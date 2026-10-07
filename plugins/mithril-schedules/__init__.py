@@ -1,11 +1,15 @@
-"""Machine/operator CLI adapter; does not add a model tool or change cron timing."""
+"""Original occurrence execution policy and CLI adapter; preserves cron timing."""
 import json
 import sys
 from agent.secret_scope import get_secret
 from .client import LIMIT, call_custody
+from .execution import execute_bound_occurrence
 
 
 def register(ctx):
+    def execution(**kwargs):
+        return execute_bound_occurrence(ctx, **kwargs)
+    ctx.register_middleware("cron_execution", execution)
     def setup(parser):
         parser.add_argument("--stdin", action="store_true", help="Read a bounded account/command envelope from stdin")
 

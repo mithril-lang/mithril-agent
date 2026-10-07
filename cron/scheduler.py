@@ -2779,7 +2779,7 @@ def run_one_job(
         with self_removal_delivery_scope(job["id"]):
             return _run_with_fire_claim_heartbeat(
                 job,
-                lambda lost_ownership: _run_one_job_body(
+                lambda lost_ownership: _run_guarded_job_body(
                     job,
                     adapters=adapters,
                     loop=loop,
@@ -3151,6 +3151,36 @@ def _deliver_crash_failure(
         _mark_incident_alerted(failure_incident_id)
     return delivery_error, delivery_outcome
 
+
+
+def _run_guarded_job_body(job: dict, **kwargs) -> bool:
+    """Bind policy credentials before any original dispatch/script/delivery effect."""
+    if job.get("_execution_binding") is None:
+        return _run_one_job_body(job, **kwargs)
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from cron.executions import get_execution
+    from hermes_cli.middleware import run_cron_execution_middleware
+    home = _get_hermes_home()
+    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    try:
+        def execute(bound_job):
+            processed = _run_one_job_body(bound_job, **kwargs)
+            row = get_execution(str(job["execution_id"]))
+            # Only a recorded complete original run proves all effects finished.
+            return {"processed": processed, "status": (row or {}).get("status", "unknown")}
+        result = run_cron_execution_middleware(job, execute)
+        if not isinstance(result, dict) or type(result.get("processed")) is not bool:
+            raise RuntimeError("Unconfirmed scheduled execution result")
+        return result["processed"]
+    except Exception:
+        # No failure delivery here: policy refusal is before side-effect permission.
+        # Original terminal records survive a post-effect lost cloud acknowledgement.
+        finish_execution(str(job["execution_id"]), success=False,
+                         error="Scheduled execution policy unavailable or unconfirmed.",
+                         delivery_outcome="suppressed")
+        return False
+    finally:
+        reset_secret_scope(token)
 
 
 def _run_one_job_body(
