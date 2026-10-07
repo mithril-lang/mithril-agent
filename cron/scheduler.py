@@ -3155,7 +3155,9 @@ def _deliver_crash_failure(
 
 def _run_guarded_job_body(job: dict, **kwargs) -> bool:
     """Bind policy credentials before any original dispatch/script/delivery effect."""
-    if job.get("_execution_binding") is None:
+    # Only absence denotes an ordinary original job. A persisted but damaged
+    # binding must still require policy; null cannot erase cloud custody.
+    if "_execution_binding" not in job:
         return _run_one_job_body(job, **kwargs)
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from cron.executions import get_execution

@@ -22,6 +22,37 @@ def client():
     return module
 
 
+def test_present_invalid_binding_never_runs_original_effect(tmp_path):
+    from cron import jobs, scheduler, executions
+    home = tmp_path / 'profile'
+    home.mkdir()
+    (home / 'scripts').mkdir()
+    effect = home / 'effect.txt'
+    (home / 'scripts' / 'one.sh').write_text('printf x >> "' + str(effect) + '"\necho done\n')
+    ht = set_hermes_home_override(home)
+    try:
+        with jobs.use_cron_store(home):
+            for binding in (None, False, '', [], {}, {'policy': ''}):
+                job = jobs.create_job(prompt=None, schedule='every 5m', script='one.sh',
+                                      no_agent=True, deliver='local')
+                attempt = executions.create_execution(job['id'], source='direct')
+                job['execution_id'] = attempt['id']
+                job['_execution_binding'] = binding
+                assert not scheduler._run_guarded_job_body(job)
+                assert not effect.exists()
+                row = executions.get_execution(attempt['id'])
+                assert row['status'] == 'failed'
+                assert row['delivery_outcome'] == 'suppressed'
+            # Ordinary original jobs with no binding retain their established path.
+            job = jobs.create_job(prompt=None, schedule='every 5m', script='one.sh',
+                                  no_agent=True, deliver='local')
+            job['execution_id'] = executions.create_execution(job['id'], source='direct')['id']
+            assert scheduler._run_guarded_job_body(job)
+            assert effect.read_text() == 'x'
+    finally:
+        reset_hermes_home_override(ht)
+
+
 def test_bound_original_script_requires_fresh_start_and_records_completion(tmp_path, monkeypatch):
     import hashlib
     from cron import jobs, scheduler, executions
