@@ -23,6 +23,10 @@ _RUNTIME_CLAIMS = ("run_claim", "fire_claim", "pending_slot")
 _MISSING = object()
 
 
+class OriginalSourceVersionMismatch(ValueError):
+    """A version guard refused before original source or execution mutation."""
+
+
 def _digest(data: bytes | None) -> str | None:
     return hashlib.sha256(data).hexdigest() if data is not None else None
 

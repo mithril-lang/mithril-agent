@@ -26,6 +26,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Prepare an original schedule record from stdin without saving or executing it")
     cron_subparsers.add_parser("source-transition",
         help="Prepare original pause/resume changes from stdin without saving or executing them")
+    cron_subparsers.add_parser("source-run",
+        help="Run an exact original source version once per retained stdin request")
 
     cron_create = cron_subparsers.add_parser(
         "create", aliases=["add"], help="Create a scheduled job")

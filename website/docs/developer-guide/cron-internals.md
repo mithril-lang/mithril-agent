@@ -469,3 +469,26 @@ must leave no executed child, live process or leaked process/job handle.
 `hermes cron source-transition` accepts a request bound to owner, active profile, configured timezone, operation ID and complete source. It prepares pause/resume with the same lifecycle builders as original store updates, preserving elapsed recurring occurrences and counters, and refuses terminal or claimed work. It never writes jobs, changes execution authority or activates a scheduler. Actual CLI A→B→A tests verify profile isolation and original bytes; original lifecycle comparison tests verify stored and prepared semantics.
 
 The native `cron source-restore` bridge accepts exactly one of `file` (the existing parsed-object mode) or `sourceText` (exact UTF-8 source). The text mode parses and validates the entire inventory without reserializing it, retaining BOM, CRLF, original field ordering and opaque integer metadata. It uses the same fire fences, original jobs lock, whole-file byte CAS, private durable receipts, runtime-claim checks and new-record ownership gate. A completed receipt may replay after newer local edits without writing those edits back. This does not authorize native resources, cloud uploads or execution; the consumer must supply those bindings separately.
+
+### Retained manual execution requests
+
+`hermes cron source-run` accepts bounded stdin with `owner`, active `profile`,
+`operationId`, `jobId` and the SHA256 `expectedVersion` of the entire native
+jobs file. Before any claim or effects it commits a private `unknown` marker in
+the existing profile-local executions database. Replays return the retained
+receipt; reusing an ID for different input refuses. The original fire fence and
+required cross-process jobs lock check the exact source version before loading
+or claiming it. A mismatched source or refused claim retains `rejected`;
+confirmed original runner success retains `completed`. Unconfirmed results,
+interrupted callers and ambiguous failures remain `unknown` and never rerun
+automatically. This does not guarantee completion after interruption.
+
+Execution uses the existing claim and runner, including its execution-policy
+plugin, resource/config resolution, output files and ledger. Manual runs do not
+stamp the pending scheduled occurrence as completed. The JSON receipt contains
+only correlated identifiers, source version and status; native output and errors
+are not copied into the remote response. Real isolated CLI tests cover A→B→A,
+source refusal, concurrent replay and killing the caller after an actual harmless
+script effect. This local port still needs the selected-device request broker,
+Native adapter, cloud authority verification and installer provisioning before
+it establishes Web execution or production readiness.

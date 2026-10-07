@@ -1,10 +1,25 @@
 """Cloud restoration must never use Cron's degraded best-effort write lock."""
 import subprocess
 import sys
+import hashlib
 
 import pytest
 
 from cron import jobs
+
+
+def test_versioned_manual_claim_cannot_degrade_its_real_store_lock(tmp_path, monkeypatch):
+    with jobs.use_cron_store(tmp_path):
+        job = jobs.create_job(prompt='original', schedule='2h')
+        path = tmp_path / 'cron' / 'jobs.json'
+        before = path.read_bytes()
+        version = hashlib.sha256(before).hexdigest()
+        monkeypatch.setattr(jobs, 'fcntl', None)
+        monkeypatch.setattr(jobs, 'msvcrt', None)
+        # The existing fire fence refuses first when no lock backend exists.
+        assert jobs.claim_job_for_fire(job['id'], manual=True, expected_version=version) is False
+        assert path.read_bytes() == before
+        assert 'fire_claim' not in jobs.get_job(job['id'])
 
 
 def test_sync_requires_crossprocess_lock_but_normal_cron_retains_degraded_behavior(tmp_path, monkeypatch):

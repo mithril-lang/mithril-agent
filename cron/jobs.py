@@ -2850,7 +2850,7 @@ def _machine_id() -> str:
 
 def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
-    manual: bool = False, return_job: bool = False,
+    manual: bool = False, return_job: bool = False, expected_version: Optional[str] = None,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
@@ -2914,7 +2914,20 @@ def claim_job_for_fire(
         save_jobs(jobs)
         return dict(copy.deepcopy(job), _scheduled_instant=instant) if return_job else True
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    def claim():
+        # Keep the existing lock order: fire fence, then store lock. Remote manual
+        # requests must match the exact source before load/claim can mutate it.
+        with _jobs_lock(require_cross_process=expected_version is not None):
+            if expected_version is not None:
+                from cron.source_restore import OriginalSourceVersionMismatch, _digest, _read
+                if (not isinstance(expected_version, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", expected_version)):
+                    raise ValueError("operation")
+                if _digest(_read(_current_cron_store().jobs_file)) != expected_version:
+                    raise OriginalSourceVersionMismatch("conflict")
+            return _with_job(job_id, apply, False)
+
+    return _under_fire_fence(job_id, claim)
 
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
