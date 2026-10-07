@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
