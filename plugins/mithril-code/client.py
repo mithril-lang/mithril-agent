@@ -1,4 +1,4 @@
-"""Bounded client for the existing Code runner; never executes repository source."""
+"""Bounded Mithril language service client with a separate legacy runner contract."""
 import json
 import socket
 import uuid
@@ -27,6 +27,19 @@ def runner_url(value):
 
 
 def validate_result(value):
+    if isinstance(value, dict) and value.get("format") == "mithril.language-project/v1":
+        files = value.get("files")
+        receipt = value.get("receipt", {})
+        if (value.get("verified") is not True or value.get("metrics", {}).get("verification-passed") is not True
+                or not isinstance(files, dict) or set(files) != {"application.mith", "artifact.json", "index.html", ".nojekyll", "README.md"}
+                or any(not isinstance(v, str) for v in files.values())
+                or receipt.get("format") != "mithril.language-inference-receipt/v1"
+                or receipt.get("compiler") != "https://app.mithril.fund/api/compile"
+                or receipt.get("status") != "admitted"
+                or receipt.get("source") != files["application.mith"]
+                or value.get("logic", {}).get("format") != "https://mithril.fund/artifact/app-agent-v1"):
+            raise ValueError("harness_verification_failed")
+        return value
     if (not isinstance(value, dict) or value.get("verified") is not True
             or value.get("format") != "mithril.code-project/v1"
             or not isinstance(value.get("metrics"), dict)
@@ -77,7 +90,7 @@ def call_runner(url, token, action, goal=""):
 
 
 def call_mithril(url, token, action, goal=""):
-    """Owned Code AST verifier calls only api.mithril.fund; GitHub keys never enter."""
+    """Owned Code language service uses Mithril API and the bounded App compiler; no GitHub keys."""
     if action not in ("status", "run"):
         return {"ok": False, "error": "invalid_action"}
     if action == "run" and (not isinstance(goal, str) or not goal.strip() or len(goal) > 2000):
@@ -91,7 +104,7 @@ def call_mithril(url, token, action, goal=""):
             raise ValueError("runner_not_configured")
     except ValueError as error:
         return {"ok": False, "error": str(error)}
-    body = json.dumps({"template": "todo", "goal": goal, "request_id": str(uuid.uuid4())}).encode() if action == "run" else None
+    body = json.dumps({"template": "mithril-app", "goal": goal, "request_id": str(uuid.uuid4())}).encode() if action == "run" else None
     headers = {"Content-Type": "application/json", "Origin": "https://code.mithril.fund", "User-Agent": "Mithril-Code-Hermes"}
     if body:
         headers["X-Mithril-Token"] = token
@@ -103,11 +116,11 @@ def call_mithril(url, token, action, goal=""):
             raise ValueError("invalid_runner_response")
         value = json.loads(raw)
         if action == "status":
-            if not isinstance(value, dict) or value.get("runner_mode") != "mithril-api-typed-ast" or value.get("ready") is not True:
+            if not isinstance(value, dict) or value.get("runner_mode") != "mithril-api-typed-ast" or value.get("ready") is not True or value.get("capabilities", {}).get("mithril_language") is not True:
                 raise ValueError("invalid_runner_response")
-            return {"ok": True, "ready": True, "busy": False, "template": "todo"}
+            return {"ok": True, "ready": True, "busy": False, "template": "mithril-app"}
         value = validate_result(value)
-        if value["metrics"].get("verification-passed") is not True or value["metrics"].get("endpoint") != "https://api.mithril.fund/v1/chat/completions":
+        if value["format"] != "mithril.language-project/v1" or value["metrics"].get("verification-passed") is not True or value["metrics"].get("endpoint") != "https://api.mithril.fund/v1/chat/completions":
             raise ValueError("invalid_runner_response")
         return {"ok": True, "result": value}
     except HTTPError as error:
