@@ -213,13 +213,18 @@ def restore_original_store(*, owner: str, profile: str, operation_id: str,
                     or jobs._claim_is_live(row.get("run_claim"), now, jobs._oneshot_run_claim_ttl_seconds())
                     or jobs._claim_is_live(row.get("fire_claim"), now, jobs.FIRE_CLAIM_TTL_SECONDS)):
                 raise ValueError("busy")
+        # A required generic policy lane permits exact authored activation data
+        # to restore, while missing/stale job bindings still refuse all effects.
+        # Reading damaged state refuses the write, never restores legacy fallback.
+        from cron.execution_bindings import read_execution_bindings
+        policy_required = read_execution_bindings() is not None
         for row in _rows(file):
             original = by_id.get(row["id"], {})
             if any(row.get(field) != original.get(field) for field in _RUNTIME_CLAIMS):
                 raise ValueError("runtime")
-            # New records are restored as data first. The original resume/create
-            # path activates them only after device bindings and ownership exist.
-            if not original and (row.get("enabled") is not False or row.get("state") not in ("paused", "completed")):
+            # Legacy profiles still require paused new records. Guarded profiles
+            # preserve authored enabled/state; the policy alone admits execution.
+            if not original and not policy_required and (row.get("enabled") is not False or row.get("state") not in ("paused", "completed")):
                 raise ValueError("ownership")
         if receipt is None:
             receipt = {"fingerprint": fingerprint, "state": "pending",

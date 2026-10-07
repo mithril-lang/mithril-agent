@@ -19,7 +19,7 @@ def register(ctx):
                 raise ValueError()
             raw = sys.stdin.buffer.read(LIMIT + 1)
             envelope = json.loads(raw) if len(raw) <= LIMIT else None
-            if not isinstance(envelope, dict) or set(envelope) not in ({"owner", "command"}, {"owner", "binding"}):
+            if not isinstance(envelope, dict) or set(envelope) not in ({"owner", "command"}, {"owner", "binding"}, {"owner", "prepare"}):
                 raise ValueError()
         except (ValueError, TypeError):
             print(json.dumps({"ok": False, "error": "invalid_schedule_command"}))
@@ -32,7 +32,13 @@ def register(ctx):
         def call(command):
             return call_custody(ctx.get_config("api_origin") or "https://api.mithril.fund",
                                 token, envelope["owner"], command)
-        if 'binding' in envelope:
+        if 'prepare' in envelope:
+            from .bindings import prepare_original_source
+            try:
+                result = {'ok': True, 'receipt': prepare_original_source(envelope['owner'], envelope['prepare'], call)}
+            except Exception:
+                result = {'ok': False, 'error': 'schedule_binding_unconfirmed'}
+        elif 'binding' in envelope:
             from .bindings import bind_original_source
             try:
                 result = {'ok': True, 'receipt': bind_original_source(envelope['owner'], envelope['binding'], call)}

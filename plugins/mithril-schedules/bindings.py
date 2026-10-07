@@ -6,7 +6,7 @@ import re
 
 from cron import jobs
 from cron.source_restore import _read, _parse, _rows
-from cron.execution_bindings import install_execution_bindings, read_execution_binding_snapshot
+from cron.execution_bindings import install_execution_bindings, read_execution_binding_snapshot, require_execution_policy
 from hermes_constants import get_hermes_home, profile_name_for_home
 from .client import integer, validate_command
 from .execution import _ATTEMPT_FIELDS
@@ -44,7 +44,7 @@ def bind_original_source(owner, anchor, call):
     status_command = {'action': 'status', 'profile': anchor['profile']}
     validate_command(status_command)
     selected = call(status_command)
-    if (not selected['ok'] or not selected['receipt']['selected']
+    if (not selected['ok']
             or selected['receipt']['revision'] != anchor['authorityRevision']):
         raise ValueError('schedule_authority_unconfirmed')
     source = _read(jobs._current_cron_store().jobs_file)
@@ -93,3 +93,25 @@ def resolve_source_binding(job, binding):
                            'operationId': job['execution_id'], 'scheduledInstant': instant,
                            'sourceRevision': binding['sourceRevision'], 'sourceDigest': binding['sourceDigest'],
                            'authorityRevision': binding['authorityRevision']}}
+
+
+def prepare_original_source(owner, request, call):
+    """Require custody before an automatic source write; does not select an executor."""
+    if (not isinstance(owner, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}', owner)
+            or not isinstance(request, dict) or set(request) != {'profile', 'nativeVersion'}
+            or not isinstance(request['profile'], str)
+            or profile_name_for_home(get_hermes_home()) != request['profile']
+            or (request['nativeVersion'] is not None and
+                (not isinstance(request['nativeVersion'], str) or
+                 not re.fullmatch(r'[a-f0-9]{64}', request['nativeVersion'])))):
+        raise ValueError('schedule_binding_unconfirmed')
+    status = call({'action': 'status', 'profile': request['profile']})
+    if not status['ok']:
+        raise ValueError('schedule_authority_unconfirmed')
+    previous, version = read_execution_binding_snapshot(allow_uninitialized=True)
+    if any(old.get('owner') != owner or old.get('profile') != request['profile']
+           or old.get('policy') != 'mithril-schedules' or old.get('kind') != 'original-source-v1'
+           for old in (previous or {}).values()):
+        raise ValueError('schedule_binding_conflict')
+    digest = require_execution_policy(request['nativeVersion'], version)
+    return {'owner': owner, **request, 'bindingDigest': digest}

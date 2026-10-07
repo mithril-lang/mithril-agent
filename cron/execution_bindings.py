@@ -91,7 +91,7 @@ def resolve_execution_binding(job):
     return result
 
 
-def install_execution_bindings(bindings, expected_source_version, expected_binding_version):
+def _install(bindings, expected_source_version, expected_binding_version, *, require_inventory):
     """Bind an exact idle original inventory under fire fences then its strict jobs lock.
 
     This grants no permission: the required registered policy must still admit
@@ -103,14 +103,15 @@ def install_execution_bindings(bindings, expected_source_version, expected_bindi
         raise ValueError('execution_policy_binding_unconfirmed')
     store = jobs._current_cron_store()
     before = _read(store.jobs_file)
-    if not isinstance(expected_source_version, str) or hashlib.sha256(before or b'').hexdigest() != expected_source_version or before is None:
+    actual_version = hashlib.sha256(before).hexdigest() if before is not None else None
+    if actual_version != expected_source_version or (require_inventory and before is None):
         raise ValueError('execution_policy_source_changed')
-    rows = _rows(_parse(before))
-    if set(value) != {row['id'] for row in rows}:
+    rows = _rows(_parse(before)) if before is not None else []
+    if require_inventory and set(value) != {row['id'] for row in rows}:
         raise ValueError('execution_policy_inventory_changed')
     marker, path = _paths()
     with ExitStack() as fences:
-        for job_id in sorted(value):
+        for job_id in sorted(row['id'] for row in rows):
             if not fences.enter_context(jobs._fire_job_lock(job_id, wait=False)):
                 raise ValueError('execution_policy_busy')
         with jobs._jobs_lock(require_cross_process=True):
@@ -133,3 +134,21 @@ def install_execution_bindings(bindings, expected_source_version, expected_bindi
             atomic_write_text(marker, _MARKER, mode=0o600, preserve_mode=False, fsync_dir=True)
             atomic_write_text(path, text, mode=0o600, preserve_mode=False, fsync_dir=True)
             return hashlib.sha256(text.encode()).hexdigest()
+
+
+def install_execution_bindings(bindings, expected_source_version, expected_binding_version):
+    """Install complete policies for this exact current original inventory."""
+    return _install(bindings, expected_source_version, expected_binding_version, require_inventory=True)
+
+
+def require_execution_policy(expected_source_version, expected_binding_version):
+    """Fence this original profile before restoration or executor selection.
+
+    Retain all previous policies. An empty policy map is a required, inactive
+    lane, so new original records can retain enabled/state bytes without effects
+    until a registered policy admits their exact definitions and occurrences.
+    """
+    previous, version = read_execution_binding_snapshot(allow_uninitialized=True)
+    if version != expected_binding_version:
+        raise ValueError('execution_policy_binding_changed')
+    return _install(previous or {}, expected_source_version, expected_binding_version, require_inventory=False)

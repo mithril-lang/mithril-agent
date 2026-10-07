@@ -285,10 +285,14 @@ def server():
                 self.send_header('Location', '/credential-leak')
                 self.end_headers()
                 return
+            if mode['value'] == 'passive' and body['action'] == 'claim':
+                self.send_response(409)
+                self.end_headers()
+                return
             value = {'userId': 'alice', 'profile': body['profile']}
             action = body['action']
             if action in ('status', 'select'):
-                value.update(selected=True, revision=1)
+                value.update(selected=mode['value'] != 'passive', revision=1)
             else:
                 value['operationId'] = body['operationId']
                 if action == 'claim':
@@ -385,3 +389,74 @@ def test_only_fixed_api_or_loopback_and_bounded_exact_commands_can_send_credenti
                         {'action':'status','profile':'x'*9000}]:
             assert not c.call_custody(url, 'mf_'+'a'*32, 'alice', invalid)['ok']
         assert not calls
+
+
+def test_guarded_automatic_restore_keeps_original_enabled_source_without_passive_execution(tmp_path):
+    import hashlib
+    from cron import jobs, source_restore
+    checkout = Path(__file__).resolve().parents[2]
+    with server() as (url, calls, mode):
+        mode['value'] = 'passive'
+        for generation, name in enumerate(['a', 'b', 'a']):
+            home = tmp_path / 'profiles' / name
+            home.mkdir(parents=True, exist_ok=True)
+            (home / 'scripts').mkdir(exist_ok=True)
+            effect = home / 'effect.txt'
+            (home / 'scripts' / 'one.sh').write_text('printf x >> "' + str(effect) + '"\necho done\n')
+            (home / '.env').write_text('MITHRIL_API_KEY=mf_' + name*32 + '\n')
+            (home / 'config.yaml').write_text('plugins:\n  enabled: [mithril-schedules]\n  entries:\n    mithril-schedules:\n      settings:\n        api_origin: ' + url + '\n')
+            env = {'HERMES_HOME': str(home), 'MITHRIL_API_KEY': 'mf_' + name*32, 'PATH': '/usr/bin:/bin'}
+            path = home / 'cron' / 'jobs.json'
+            before = path.read_bytes() if path.exists() else None
+            version = hashlib.sha256(before).hexdigest() if before is not None else None
+            def cli(envelope):
+                result = subprocess.run([sys.executable, str(checkout / 'hermes'), '-p', name,
+                    'mithril-schedule-custody', '--stdin'], input=json.dumps(envelope), text=True,
+                    capture_output=True, timeout=30, cwd=checkout, env=env)
+                assert result.returncode == 0, result.stderr
+                return json.loads(result.stdout.strip().split('\n')[-1])
+            first = len(calls)
+            prepared = cli({'owner': 'alice', 'prepare': {'profile': name, 'nativeVersion': version}})
+            assert prepared['ok'], prepared
+            assert (path.read_bytes() if path.exists() else None) == before
+            assert len(calls) == first + 1 and calls[-1][2]['action'] == 'status'
+            source = '\ufeff{\r\n"opaque":9223372036854775807,"jobs":[{"id":"synced","name":"original","enabled":true,"state":"scheduled","schedule":{"kind":"interval","seconds":300,"display":"every 5m"},"script":"one.sh","no_agent":true,"deliver":"local","prompt":null}]}\r\n'
+            with jobs.use_cron_store(home):
+                receipt = source_restore.restore_original_store(owner='alice', profile=name,
+                    operation_id='restore-' + str(generation), expected_version=version, source_text=source)
+            assert path.read_bytes() == source.encode()
+            def worker():
+                run = subprocess.run([sys.executable, '-c', _ORIGINAL_WORKER],
+                    input=json.dumps({'jobId': 'synced', 'instant': None}), text=True,
+                    capture_output=True, timeout=30, cwd=checkout, env=env)
+                assert run.returncode == 0, run.stderr
+                value = json.loads(run.stdout.strip().split('\n')[-1])
+                assert not value['processed'] and value['execution']['delivery_outcome'] == 'suppressed'
+                assert not effect.exists()
+            # Exact enabled/state source may restore, but a fresh worker has no local-effect fallback.
+            worker()
+            anchor = {'profile': name, 'sourceRevision': 1, 'sourceDigest': hashlib.sha256(source.encode()).hexdigest(),
+                      'authorityRevision': 1, 'nativeVersion': hashlib.sha256(path.read_bytes()).hexdigest()}
+            bound = cli({'owner': 'alice', 'binding': anchor})
+            assert bound['ok'], bound
+            # Passive replicas retain source custody; the actual cloud claim refuses effects.
+            worker()
+            assert calls[-1][2]['action'] == 'claim'
+            assert all(c[2]['action'] not in ('select', 'transition') for c in calls[first:])
+            # An acknowledged restore does not overwrite the original writer's newer counters.
+            newer = path.read_bytes()
+            with jobs.use_cron_store(home):
+                assert source_restore.restore_original_store(owner='alice', profile=name,
+                    operation_id='restore-' + str(generation), expected_version=version, source_text=source) == receipt
+            assert path.read_bytes() == newer
+
+        # The same restored original record runs only after this credential is selected.
+        mode['value'] = 'ok'
+        run = subprocess.run([sys.executable, '-c', _ORIGINAL_WORKER],
+            input=json.dumps({'jobId': 'synced', 'instant': None}), text=True,
+            capture_output=True, timeout=30, cwd=checkout, env=env)
+        assert run.returncode == 0, run.stderr
+        value = json.loads(run.stdout.strip().split('\n')[-1])
+        assert value['processed'] and value['execution']['status'] == 'completed'
+        assert effect.read_text() == 'x'
+        assert [c[2]['action'] for c in calls[-3:]] == ['claim', 'transition', 'transition']
