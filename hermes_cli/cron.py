@@ -997,12 +997,14 @@ def cron_restore_source():
     from hermes_cli.profiles import profile_matches_home
     try:
         value = _read_cron_source_request(80 * 1024 * 1024)
-        if not isinstance(value, dict) or set(value) != {"owner", "profile", "operationId", "expectedVersion", "file"}:
+        common = {"owner", "profile", "operationId", "expectedVersion"}
+        if not isinstance(value, dict) or set(value) not in (common | {"file"}, common | {"sourceText"}):
             raise ValueError("operation")
         if not profile_matches_home(value["profile"]):
             raise ValueError("identity")
         receipt = restore_original_store(owner=value["owner"], profile=value["profile"],
-            operation_id=value["operationId"], expected_version=value["expectedVersion"], file=value["file"])
+            operation_id=value["operationId"], expected_version=value["expectedVersion"],
+            **({"source_text": value["sourceText"]} if "sourceText" in value else {"file": value["file"]}))
         print(json.dumps({"success": True, "receipt": receipt}))
         return 0
     except Exception as error:

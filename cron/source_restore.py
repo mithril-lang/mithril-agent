@@ -8,6 +8,7 @@ jobs through the CLI list format. Runtime claims never come from another replica
 import contextlib
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ from utils import atomic_write_text
 _LIMIT = 20 * 1024 * 1024
 _IDENTITY = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 _RUNTIME_CLAIMS = ("run_claim", "fire_claim", "pending_slot")
+_MISSING = object()
 
 
 def _digest(data: bytes | None) -> str | None:
@@ -99,7 +101,14 @@ def _parse(data: bytes):
                 raise ValueError("inventory")
             result[key] = value
         return result
-    file = json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique, parse_constant=reject_constant)
+    def finite_float(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise ValueError("inventory")
+        return value
+
+    file = json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique,
+                      parse_constant=reject_constant, parse_float=finite_float)
     _rows(file)
     return file
 
@@ -144,7 +153,7 @@ def _restore_fences(path, receipt_path, fingerprint, expected_version, target_ve
 
 
 def restore_original_store(*, owner: str, profile: str, operation_id: str,
-                           expected_version: str | None, file) -> dict:
+                           expected_version: str | None, file=_MISSING, source_text=_MISSING) -> dict:
     """CAS restore in the active original Cron store; no profile-global mutation.
 
     The caller supplies the fixed local profile context via ``use_cron_store``.
@@ -158,8 +167,15 @@ def restore_original_store(*, owner: str, profile: str, operation_id: str,
     if len(profile) > 64 or (expected_version is not None and (
             not isinstance(expected_version, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_version))):
         raise ValueError("identity")
-    _rows(file)
-    target = json.dumps(file, ensure_ascii=False, allow_nan=False, indent=2)
+    if (file is _MISSING) == (source_text is _MISSING):
+        raise ValueError("operation")
+    if source_text is not _MISSING:
+        if not isinstance(source_text, str):
+            raise ValueError("inventory")
+        target = source_text
+    else:
+        _rows(file)
+        target = json.dumps(file, ensure_ascii=False, allow_nan=False, indent=2)
     target_bytes = target.encode("utf-8")
     if len(target_bytes) > _LIMIT:
         raise ValueError("oversize")

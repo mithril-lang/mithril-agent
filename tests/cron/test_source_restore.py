@@ -227,3 +227,32 @@ def test_windows_handle_times_are_compared_without_losing_late_change_detection(
     with pytest.raises(ValueError, match="conflict"):
         source_restore._read(path)
     assert path.read_bytes() == original + b"\n "
+
+
+def test_exact_source_text_roundtrip_replay_and_refusal_preserve_original_bytes(tmp_path):
+    for index, profile in enumerate(("a", "b", "a")):
+        home = tmp_path / profile
+        path = home / "cron" / "jobs.json"
+        if not path.exists():
+            fixture(home, {"jobs": []})
+        version = hashlib.sha256(path.read_bytes()).hexdigest()
+        source = '\ufeff{\r\n "opaqueCounter": 9223372036854775807,\r\n "jobs": [{"id":"original","state":"paused","enabled":false,"future":"日本語"}]\r\n}\r\n'
+        with jobs.use_cron_store(home):
+            receipt = source_restore.restore_original_store(owner="alice", profile=profile,
+                operation_id=f"raw-{index}", expected_version=version, source_text=source)
+            assert path.read_bytes() == source.encode("utf-8")
+            assert receipt["version"] == hashlib.sha256(source.encode("utf-8")).hexdigest()
+            newer = source.replace('"future":"日本語"', '"future":"newer"')
+            path.write_bytes(newer.encode("utf-8"))
+            assert source_restore.restore_original_store(owner="alice", profile=profile,
+                operation_id=f"raw-{index}", expected_version=version, source_text=source) == receipt
+            assert path.read_bytes() == newer.encode("utf-8")
+            for bad, error in [('{"jobs":[],"jobs":[]}', "inventory"),
+                               ('{"jobs":[],"value":NaN}', "inventory"),
+                               ('{"jobs":[],"value":1e999}', "inventory"),
+                               ('{"jobs":[{"id":"unbound","enabled":true}]}', "ownership"),
+                               ('{"jobs":[{"id":"original","fire_claim":{"by":"foreign"}}]}', "runtime")]:
+                with pytest.raises(ValueError, match=error):
+                    source_restore.restore_original_store(owner="alice", profile=profile,
+                        operation_id="refused", expected_version=hashlib.sha256(path.read_bytes()).hexdigest(), source_text=bad)
+                assert path.read_bytes() == newer.encode("utf-8")
