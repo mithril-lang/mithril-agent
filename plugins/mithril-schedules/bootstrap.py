@@ -47,13 +47,22 @@ def prepare_policy(owner, request, call):
         raise ValueError("schedule_authority_unconfirmed")
     receipt(status.get("receipt"), owner, command)
     _owned_policy()
-    if "mithril-schedules" not in enabled:
+    admitted = "mithril-schedules" not in enabled
+    if admitted:
         _admit_and_save_plugin_sets(enabled | {"mithril-schedules"}, disabled,
                                    expected_config=version, plugin="mithril-schedules")
     _owned_policy()
     # Revalidate authority and source CAS after admission. A failed preparation
     # is never a successful restore, selection or execution receipt.
-    return prepare_original_source(owner, request, call)
+    result = prepare_original_source(owner, request, call)
+    if admitted:
+        # The required marker is durable before notifying existing runtimes:
+        # failure/unavailability cannot reopen the unguarded original path.
+        # Reuse the same activation path as normal plugin enablement, preserving
+        # deferred prompt/tool activation for open conversations.
+        from hermes_cli.plugins_activation import activate_plugin_now
+        activate_plugin_now("mithril-schedules", in_process=False)
+    return result
 
 
 def main():
