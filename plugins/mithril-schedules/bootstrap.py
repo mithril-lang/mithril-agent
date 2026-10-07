@@ -87,7 +87,7 @@ def main():
             return client.call_custody("https://api.mithril.fund", token, value["owner"], command)
         # PM may report progress; the Desktop wire is exactly one bounded JSON
         # receipt and never forwards configuration/resolver diagnostics.
-        with open(os.devnull, "w") as sink, redirect_stdout(sink), redirect_stderr(sink):
+        with open(os.devnull, "w", encoding="utf-8") as sink, redirect_stdout(sink), redirect_stderr(sink):
             result = {"ok": True, "receipt": module.prepare_policy(value["owner"], value["prepare"], call)}
     except Exception:
         result = {"ok": False, "error": "schedule_binding_unconfirmed"}

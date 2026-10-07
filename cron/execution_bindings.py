@@ -27,8 +27,11 @@ def _private_read(path):
     data = _read(path)
     if data is not None:
         info = path.lstat()
-        if (os.name != 'nt' and (stat.S_IMODE(info.st_mode) & 0o077 or info.st_uid != os.getuid())):
-            raise ValueError('execution_policy_storage_unconfirmed')
+        if os.name != 'nt':
+            getuid = getattr(os, 'getuid', None)
+            if (not callable(getuid) or stat.S_IMODE(info.st_mode) & 0o077
+                    or info.st_uid != getuid()):
+                raise ValueError('execution_policy_storage_unconfirmed')
     return data
 
 

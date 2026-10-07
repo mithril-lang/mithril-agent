@@ -85,3 +85,17 @@ def test_running_original_process_defers_required_policy_preparation(tmp_path):
         assert not (path.parent / 'execution-bindings.json').exists()
     finally:
         child.communicate(timeout=10)
+
+
+def test_private_policy_reads_refuse_missing_posix_owner_api_and_allow_windows(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from cron import execution_bindings
+
+    path = tmp_path / "policy.json"
+    path.write_bytes(b'{"schemaVersion":1}')
+    path.chmod(0o600)
+    monkeypatch.setattr(execution_bindings, "os", SimpleNamespace(name="posix"))
+    with pytest.raises(ValueError, match="storage_unconfirmed"):
+        execution_bindings._private_read(path)
+    monkeypatch.setattr(execution_bindings, "os", SimpleNamespace(name="nt"))
+    assert execution_bindings._private_read(path) == path.read_bytes()
