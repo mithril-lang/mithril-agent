@@ -459,3 +459,7 @@ real CreateProcess call. The temporary inspection increment is restored without
 resuming execution. Whole-process status is not a substitute for this boundary:
 loader threads may have different states. Assignment/resume cancellation still
 must leave no executed child, live process or leaked process/job handle.
+
+### Readonly original lifecycle preparation
+
+`hermes cron source-transition` accepts a request bound to owner, active profile, configured timezone, operation ID and complete source. It prepares pause/resume with the same lifecycle builders as original store updates, preserving elapsed recurring occurrences and counters, and refuses terminal or claimed work. It never writes jobs, changes execution authority or activates a scheduler. Actual CLI A→B→A tests verify profile isolation and original bytes; original lifecycle comparison tests verify stored and prepared semantics.

@@ -934,23 +934,27 @@ def _read_cron_source_request(limit):
                       parse_constant=invalid_constant)
 
 
+def _check_cron_preparation_scope(value, keys):
+    from hermes_cli.profiles import profile_matches_home
+    from hermes_time import get_timezone
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError("operation")
+    if any(not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", value[key])
+           for key in ("owner", "profile", "operationId")) or len(value["profile"]) > 64:
+        raise ValueError("identity")
+    if not profile_matches_home(value["profile"]):
+        raise ValueError("identity")
+    zone = get_timezone()
+    if zone is None or zone.key != value["timeZone"]:
+        raise ValueError("timezone")
+
+
 def cron_prepare_source():
     """Read-only original parser bridge, bound to the active profile and configured timezone."""
     from cron.jobs import prepare_job
-    from hermes_cli.profiles import profile_matches_home
-    from hermes_time import get_timezone
     try:
         value = _read_cron_source_request(20 * 1024 * 1024)
-        if not isinstance(value, dict) or set(value) != {"owner", "profile", "operationId", "timeZone", "input"}:
-            raise ValueError("operation")
-        if any(not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", value[key])
-               for key in ("owner", "profile", "operationId")) or len(value["profile"]) > 64:
-            raise ValueError("identity")
-        if not profile_matches_home(value["profile"]):
-            raise ValueError("identity")
-        zone = get_timezone()
-        if zone is None or zone.key != value["timeZone"]:
-            raise ValueError("timezone")
+        _check_cron_preparation_scope(value, {"owner", "profile", "operationId", "timeZone", "input"})
         fields = value["input"]
         if (not isinstance(fields, dict) or "schedule" not in fields
                 or set(fields) - {"schedule", "prompt", "name", "deliver"}
@@ -967,6 +971,22 @@ def cron_prepare_source():
         return 0
     except Exception as error:
         code = str(error) if str(error) in {"identity", "timezone", "operation", "oversize"} else "invalid_preparation"
+        print(json.dumps({"success": False, "error": code}))
+        return 1
+
+
+def cron_prepare_transition():
+    """Original lifecycle preparation; captured source remains data, never executor authority."""
+    from cron.jobs import prepare_job_transition
+    try:
+        value = _read_cron_source_request(20 * 1024 * 1024)
+        _check_cron_preparation_scope(value, {"owner", "profile", "operationId", "timeZone", "action", "source"})
+        job = prepare_job_transition(value["source"], value["action"])
+        preparation = {**value, "job": job}
+        print(json.dumps({"success": True, "preparation": preparation}))
+        return 0
+    except Exception as error:
+        code = str(error) if str(error) in {"identity", "timezone", "operation", "oversize", "inventory", "terminal", "busy"} else "invalid_preparation"
         print(json.dumps({"success": False, "error": code}))
         return 1
 
@@ -996,6 +1016,7 @@ _CRON_SUBCOMMANDS = {
     "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
     "source-restore": lambda a: cron_restore_source(),
     "source-prepare": lambda a: cron_prepare_source(),
+    "source-transition": lambda a: cron_prepare_transition(),
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),

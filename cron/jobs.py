@@ -2186,6 +2186,46 @@ def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
+def prepare_job_update(job: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply original update rules to an in-memory record without saving the store.
+
+    Like the original update path, normalizers may mutate their inputs. Read-only
+    consumers must pass captured copies; no store, lock or execution is touched.
+    """
+    bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
+    if bad_fields:
+        raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
+    job_id = job["id"]
+    _rederive_repeat_for_schedule_change(job, updates)
+    _normalize_job_updates(job, updates)
+    _apply_pin_update(job, updates)
+    updated = _apply_skill_fields({**job, **updates})
+    _reject_terminal_activation(job, updated, job_id)
+    # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
+    if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
+        _validate_job_mode_invariants(
+            updated.get("monitor_script") or None,
+            updated.get("monitor_url") or None,
+            bool(updated.get("no_agent")),
+            _normalize_job_optional_text(updated.get("script")))
+    if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
+        raise ValueError(EMPTY_PAYLOAD_ERROR)
+    if "schedule" in updates:
+        _apply_schedule_update(updated, updates, job_id)
+        # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
+        # the record from the stale-error re-arm while no longer describing where it is
+        # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
+        from cron.quota_hold import clear_state as _clear_quota_hold
+        _clear_quota_hold(updated)
+    if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
+        # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
+        # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
+        updated.pop("pending_slot", None)
+    _fill_missing_next_run(updated)
+    _reject_terminal_activation(job, updated, job_id)
+    return updated
+
+
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
@@ -2194,33 +2234,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
-        _rederive_repeat_for_schedule_change(job, updates)
-        _normalize_job_updates(job, updates)
-        _apply_pin_update(job, updates)
-        updated = _apply_skill_fields({**job, **updates})
-        _reject_terminal_activation(job, updated, job_id)
-        # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
-        if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
-            _validate_job_mode_invariants(
-                updated.get("monitor_script") or None,
-                updated.get("monitor_url") or None,
-                bool(updated.get("no_agent")),
-                _normalize_job_optional_text(updated.get("script")))
-        if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
-            raise ValueError(EMPTY_PAYLOAD_ERROR)
-        if "schedule" in updates:
-            _apply_schedule_update(updated, updates, job_id)
-            # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
-            # the record from the stale-error re-arm while no longer describing where it is
-            # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
-            from cron.quota_hold import clear_state as _clear_quota_hold
-            _clear_quota_hold(updated)
-        if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
-            # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
-            # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
-            updated.pop("pending_slot", None)
-        _fill_missing_next_run(updated)
-        _reject_terminal_activation(job, updated, job_id)
+        updated = prepare_job_update(job, updates)
         jobs[i] = updated
         save_jobs(jobs)
         return _normalize_job_record(updated)
@@ -2228,31 +2242,38 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return _with_job(job_id, apply)
 
 
+def _pause_job_updates(reason: Optional[str] = None) -> Dict[str, Any]:
+    return {"enabled": False, "state": "paused",
+            "paused_at": _hermes_now().isoformat(), "paused_reason": reason}
+
+
+def prepare_job_transition(job: Dict[str, Any], action: str) -> Dict[str, Any]:
+    """Prepare original pause/resume rules on captured copies, without native writes."""
+    captured = copy.deepcopy(job)
+    if action not in {"pause", "resume"}:
+        raise ValueError("operation")
+    if (not isinstance(captured, dict) or not isinstance(captured.get("id"), str)
+            or not re.fullmatch(r"[a-zA-Z0-9_-]{1,256}", captured["id"])
+            or not isinstance(captured.get("schedule"), dict)):
+        raise ValueError("inventory")
+    if is_terminal_job(captured):
+        raise ValueError("terminal")
+    if any(captured.get(field) is not None for field in ("pending_slot", "run_claim", "fire_claim")):
+        raise ValueError("busy")
+    updates = _pause_job_updates() if action == "pause" else _resume_job_updates(captured)
+    return prepare_job_update(captured, updates)
+
+
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Pause a job without deleting it. Accepts a job ID or name."""
     job = resolve_job_ref(job_id)
     if not job:
         return None
-    return update_job(job["id"], {
-        "enabled": False,
-        "state": "paused",
-        "paused_at": _hermes_now().isoformat(),
-        "paused_reason": reason,
-    })
+    return update_job(job["id"], _pause_job_updates(reason))
 
 
-def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job. Accepts a job ID or name.
-
-    A recurring job paused across one of its slots must not lose that slot silently: the stored
-    ``next_run_at`` (already past) survives resume as the due instant, and the ordinary late /
-    catch-up / ``cron.catch_up_missed`` policy in the due scan decides what happens to it — one
-    fire or a logged skip, never a silent re-anchor past it (#113603). One-shots and future
-    instants recompute from now as before.
-    """
-    job = resolve_job_ref(job_id)
-    if not job:
-        return None
+def _resume_job_updates(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Shared original resume policy; elapsed recurring occurrences stay due."""
     stored_next = job.get("next_run_at")
     stored_dt = _parse_aware(stored_next) if stored_next else None
     if (
@@ -2272,13 +2293,28 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         raise ValueError(
             f"Cannot resume: one-shot time {run_at} is in the past "
             f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire.")
-    return update_job(job["id"], {
+    return {
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
         "paused_reason": None,
         "next_run_at": next_run_at,
-    })
+    }
+
+
+def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Resume a paused job. Accepts a job ID or name.
+
+    A recurring job paused across one of its slots must not lose that slot silently: the stored
+    ``next_run_at`` (already past) survives resume as the due instant, and the ordinary late /
+    catch-up / ``cron.catch_up_missed`` policy in the due scan decides what happens to it — one
+    fire or a logged skip, never a silent re-anchor past it (#113603). One-shots and future
+    instants recompute from now as before.
+    """
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
+    return update_job(job["id"], _resume_job_updates(job))
 
 
 def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
