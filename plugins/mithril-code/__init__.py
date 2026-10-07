@@ -23,11 +23,12 @@ def register(ctx):
         name="mithril_code", toolset="mithril_code", handler=handler, check_fn=configured,
         requires_env=["MITHRIL_API_KEY"], description="Verified Mithril coding", emoji="🧩",
         schema={"name": "mithril_code", "description": (
-            "Run the Mithril API typed-AST System One coding harness for a To-do completion toggle "
-            "and unfinished count, with typed AST admission and 511 completion-state checks. Returns typed logic, source and "
-            "measurements. UI and arbitrary repository execution are outside this proof. status checks "
-            "readiness; run uses the Mithril inference allowance. Never automatically retry an unknown outcome. "
-            "Does not save, overwrite, commit or publish files."),
+            "System One coding in the Mithril language using api.mithril.fund. Generates an inert "
+            "application.mith for a bounded static dashboard, report or directory; the actual Mithril App "
+            "compiler executes OWL, SPARQL, SHACL and conformance checks. Returns source, artifact, HTML "
+            "and receipts. Arbitrary runtime logic and repository execution are outside this contract. "
+            "status checks readiness; run uses Mithril inference and Code allowances. Never retry an "
+            "unknown outcome. Does not save, overwrite, commit or publish files."),
             "parameters": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["status", "run"]},
                 "goal": {"type": "string", "maxLength": 2000}}, "required": ["action"], "additionalProperties": False}})

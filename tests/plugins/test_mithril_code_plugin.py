@@ -22,7 +22,7 @@ def runner():
             requests.append((self.path, self.headers.get("X-Mithril-Token"), None))
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(json.dumps({"ready": True, "runner_mode": "mithril-api-typed-ast"}).encode())
+            self.wfile.write(json.dumps({"ready": True, "runner_mode": "mithril-api-typed-ast", "capabilities": {"mithril_language": True}}).encode())
         def do_POST(self):
             assert self.headers.get("User-Agent") == "Mithril-Code-Hermes"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -34,9 +34,12 @@ def runner():
                 return
             self.send_response(200)
             self.end_headers()
-            result = {"format": "mithril.code-project/v1", "verified": body["goal"] != "unverified",
-                      "metrics": {"receipt-id": "synthetic-adapter-test", "verification-passed": True, "endpoint": "https://api.mithril.fund/v1/chat/completions"}, "logic": {},
-                      "files": {"src/todo/interaction.cljk": "toggle", "src/todo/summary.cljk": "count"}}
+            assert body["template"] == "mithril-app"
+            result = {"format": "mithril.language-project/v1", "verified": body["goal"] != "unverified",
+                      "metrics": {"receipt-id": "synthetic-adapter-test", "verification-passed": True, "endpoint": "https://api.mithril.fund/v1/chat/completions"},
+                      "logic": {"format": "https://mithril.fund/artifact/app-agent-v1"},
+                      "receipt": {"format": "mithril.language-inference-receipt/v1", "compiler": "https://app.mithril.fund/api/compile", "status": "admitted", "source": "(mithril/app-agent)"},
+                      "files": {"application.mith": "(mithril/app-agent)", "artifact.json": "{}", "index.html": "hello", ".nojekyll": "", "README.md": "test"}}
             self.wfile.write(json.dumps(result).encode())
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

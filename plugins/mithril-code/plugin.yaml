@@ -1,6 +1,6 @@
 name: mithril-code
-version: "0.2.1"
-description: "Mithril API bounded System One coding: typed assembly, fixed acceptance checks and source receipts."
+version: "0.3.0"
+description: "Mithril API bounded System One coding: Mithril language source, actual bounded compiler and source receipts."
 author: Mithril
 provides_tools:
   - mithril_code
