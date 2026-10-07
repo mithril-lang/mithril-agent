@@ -443,6 +443,10 @@ profile, operation ID and the configured IANA timezone. It calls the same
 schedule grammar and metadata without writing jobs, claiming occurrences or
 granting execution authority. Duplicate fields and unexpected input authority
 are refused. A successful preparation is data, not a scheduled execution.
+The preparation also includes `sourceText`, the original builder's complete JSON
+source. Consumers must retain that text when inserting into an original full-file
+inventory instead of serializing a JavaScript projection with potentially rounded
+opaque integers. The read-only command still writes no native files or receipts.
 
 `cron source-restore` uses the original jobs lock, occurrence fences and source
 CAS. Its atomic text writer opts out of host newline conversion so the receipt

@@ -967,6 +967,9 @@ def cron_prepare_source():
                           name=fields.get("name"), deliver=fields.get("deliver"))
         preparation = {key: value[key] for key in ("owner", "profile", "operationId", "timeZone", "input")}
         preparation["job"] = job
+        # Retain the original builder's full numeric/source representation across
+        # JavaScript consumers; a parsed object alone can round opaque integers.
+        preparation["sourceText"] = json.dumps(job, ensure_ascii=False, allow_nan=False)
         print(json.dumps({"success": True, "preparation": preparation}))
         return 0
     except Exception as error:

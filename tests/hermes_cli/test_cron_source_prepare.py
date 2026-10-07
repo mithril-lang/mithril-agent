@@ -38,6 +38,8 @@ def test_readonly_original_preparation_is_profile_and_timezone_bound(tmp_path):
         assert preparation["job"]["schedule"]["kind"] == kind
         assert preparation["job"]["prompt"] == request["input"]["prompt"]
         assert preparation["job"]["deliver"] == "local"
+        assert json.loads(preparation["sourceText"]) == preparation["job"]
+        assert request["input"]["prompt"] in preparation["sourceText"]
         assert path.read_bytes() == before
         assert sorted(p.name for p in path.parent.iterdir()) == ["jobs.json"]
         if kind == "once":
