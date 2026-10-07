@@ -1,4 +1,4 @@
-"""Real HTTP/profile discovery tests for original schedule custody, without execution."""
+"""Real HTTP/profile discovery and original shell-effect custody regressions."""
 import importlib.util
 import io
 import json
@@ -20,6 +20,156 @@ def client():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+_ORIGINAL_WORKER = '''
+import json, sys
+from hermes_cli.plugins import discover_plugins
+discover_plugins()
+from cron import jobs, scheduler, executions
+value = json.load(sys.stdin)
+job = jobs.get_job(value['jobId'])
+attempt = executions.create_execution(job['id'], source='direct', scheduled_instant=value['instant'])
+job['execution_id'] = attempt['id']
+job['_scheduled_instant'] = value['instant']
+processed = scheduler._run_guarded_job_body(job)
+print(json.dumps({'processed': processed, 'execution': executions.get_execution(attempt['id'])}))
+'''
+
+
+def test_durable_original_source_binding_survives_process_and_profile_restarts(tmp_path):
+    import hashlib
+    import stat
+    from cron import jobs
+    from cron.occurrences import scheduled_instant
+    checkout = Path(__file__).resolve().parents[2]
+    with server() as (url, calls, mode):
+        for generation, name in enumerate(['a', 'b', 'a'], 1):
+            home = tmp_path / 'profiles' / name
+            home.mkdir(parents=True, exist_ok=True)
+            (home / 'scripts').mkdir(exist_ok=True)
+            effect = home / 'effect.txt'
+            baseline = effect.read_text() if effect.exists() else ''
+            (home / 'scripts' / 'one.sh').write_text('printf x >> "' + str(effect) + '"\necho done\n')
+            (home / '.env').write_text('MITHRIL_API_KEY=mf_' + name*32 + '\n')
+            (home / 'config.yaml').write_text('plugins:\n  enabled: [mithril-schedules]\n  entries:\n    mithril-schedules:\n      settings:\n        api_origin: ' + url + '\n')
+            ht = set_hermes_home_override(home)
+            try:
+                with jobs.use_cron_store(home):
+                    job = jobs.create_job(prompt=None, schedule='every 5m', script='one.sh', no_agent=True, deliver='local')
+                    # Preserve original headers, BOM, CRLF and numeric source lexemes at binding time.
+                    path = home / 'cron' / 'jobs.json'
+                    text = path.read_text(encoding='utf-8-sig')
+                    if 'opaque' not in json.loads(text):
+                        text = text.replace('{', '{\n"opaque":1.25e+0300,', 1)
+                    text = '\ufeff' + text.replace('\n', '\r\n')
+                    path.write_bytes(text.encode())
+                    before = path.read_bytes()
+                env = {'HERMES_HOME': str(home), 'MITHRIL_API_KEY': 'mf_' + name*32, 'PATH': '/usr/bin:/bin'}
+                anchor = {'profile': name, 'sourceRevision': generation, 'sourceDigest': hashlib.sha256(before).hexdigest(),
+                          'authorityRevision': 1, 'nativeVersion': hashlib.sha256(before).hexdigest()}
+                bound = subprocess.run([sys.executable, str(checkout / 'hermes'), '-p', name, 'mithril-schedule-custody', '--stdin'],
+                    input=json.dumps({'owner': 'alice', 'binding': anchor}), text=True,
+                    capture_output=True, timeout=30, cwd=checkout, env=env)
+                assert bound.returncode == 0, bound.stderr
+                result = json.loads(bound.stdout.strip().split('\n')[-1])
+                assert result['ok'], (name, result, [call[2]['action'] for call in calls])
+                assert result['receipt']['nativeVersion'] == anchor['nativeVersion']
+                assert path.read_bytes() == before
+                for file in ['execution-bindings.json', 'execution-policy-required.json']:
+                    assert stat.S_IMODE((home / 'cron' / file).stat().st_mode) == 0o600
+                first = len(calls)
+                # Each invocation is a fresh interpreter; counters advance without re-binding authored definitions.
+                for instant in ['2026-10-07T00:17:00.000001+00:00', '2026-10-07T00:22:00.000002+00:00', None]:
+                    run = subprocess.run([sys.executable, '-c', _ORIGINAL_WORKER],
+                        input=json.dumps({'jobId': job['id'], 'instant': instant}), text=True,
+                        capture_output=True, timeout=30, cwd=checkout, env=env)
+                    assert run.returncode == 0, run.stderr
+                    value = json.loads(run.stdout.strip().split('\n')[-1])
+                    assert value['processed'], value
+                    assert value['execution']['status'] == 'completed'
+                    expected = instant or scheduled_instant(value['execution']['claimed_at'])
+                    assert calls[-3][2]['scheduledInstant'] == expected
+                    assert calls[-3][2]['operationId'] == value['execution']['id']
+                assert effect.read_text() == baseline + 'xxx'
+                assert all(c[1] == 'Bearer mf_' + name*32 and c[2]['profile'] == name for c in calls[first:])
+                assert [c[2]['action'] for c in calls[first:]] == ['claim', 'transition', 'transition'] * 3
+            finally:
+                reset_hermes_home_override(ht)
+
+
+def test_durable_required_binding_refuses_missing_store_authored_edits_and_plugin_unload(tmp_path, monkeypatch):
+    import hashlib
+    from cron import jobs, scheduler, executions
+    from hermes_cli.plugins import PluginManager
+    from cron.execution_bindings import install_execution_bindings, read_execution_binding_snapshot
+    home = tmp_path / 'profiles' / 'a'
+    home.mkdir(parents=True)
+    (home / 'scripts').mkdir()
+    effect = home / 'effect.txt'
+    (home / 'scripts' / 'one.sh').write_text('printf x >> "' + str(effect) + '"\necho done\n')
+    (home / '.env').write_text('MITHRIL_API_KEY=mf_' + 'a'*32 + '\n')
+    with server() as (url, calls, mode):
+        (home / 'config.yaml').write_text('plugins:\n  enabled: [mithril-schedules]\n  entries:\n    mithril-schedules:\n      settings:\n        api_origin: ' + url + '\n')
+        ht = set_hermes_home_override(home)
+        manager = PluginManager()
+        try:
+            manager.discover_and_load()
+            monkeypatch.setattr('hermes_cli.plugins._delivery_manager', lambda: manager)
+            plugin = manager._plugins['mithril-schedules'].module
+            # Resolve through the actual loaded policy module (no fake execution callback).
+            binding_module = sys.modules[plugin.__name__ + '.bindings'] if plugin.__name__ + '.bindings' in sys.modules else None
+            if binding_module is None:
+                import importlib
+                binding_module = importlib.import_module(plugin.__name__ + '.bindings')
+            with jobs.use_cron_store(home):
+                job = jobs.create_job(prompt=None, schedule='every 5m', script='one.sh', no_agent=True, deliver='local')
+                path = home / 'cron' / 'jobs.json'
+                source = path.read_bytes()
+                anchor = {'profile': 'a', 'sourceRevision': 1, 'sourceDigest': 'a'*64,
+                          'authorityRevision': 1, 'nativeVersion': hashlib.sha256(source).hexdigest()}
+                c = client()
+                binding_module.bind_original_source('alice', anchor, lambda command: c.call_custody(url, 'mf_'+'a'*32, 'alice', command))
+                bindings, version = read_execution_binding_snapshot()
+                # Source/store CAS prevents old producers from replacing new private state.
+                for wrong_source, wrong_binding in [('b'*64, version), (anchor['nativeVersion'], 'b'*64)]:
+                    try:
+                        install_execution_bindings(bindings, wrong_source, wrong_binding)
+                        assert False, 'stale producer changed the binding'
+                    except ValueError:
+                        pass
+                assert path.read_bytes() == source
+                first = len(calls)
+                def attempt(current):
+                    current = dict(current)
+                    current['execution_id'] = executions.create_execution(current['id'], source='direct')['id']
+                    assert not scheduler._run_guarded_job_body(current)
+                    assert executions.get_execution(current['execution_id'])['delivery_outcome'] == 'suppressed'
+                    assert not effect.exists()
+                changed = dict(job, prompt='changed authored prompt')
+                attempt(changed)
+                changed = dict(job, repeat={**job['repeat'], 'times': 2})
+                attempt(changed)
+                changed = dict(job, opaque_author_metadata={'private': 'changed'})
+                attempt(changed)
+                # A new native job waits for automatic source publication/binding instead of falling back.
+                new = jobs.create_job(prompt=None, schedule='every 5m', script='one.sh', no_agent=True, deliver='local')
+                attempt(new)
+                store = home / 'cron' / 'execution-bindings.json'
+                retained = store.read_bytes()
+                store.unlink()
+                attempt(job)
+                store.write_bytes(retained)
+                store.chmod(0o600)
+                store.write_text('{invalid')
+                attempt(job)
+                store.write_bytes(retained)
+                manager.unload()
+                attempt(job)
+                assert len(calls) == first
+        finally:
+            manager.unload()
+            reset_hermes_home_override(ht)
 
 
 def test_present_invalid_binding_never_runs_original_effect(tmp_path):

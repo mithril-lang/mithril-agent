@@ -19,7 +19,7 @@ def register(ctx):
                 raise ValueError()
             raw = sys.stdin.buffer.read(LIMIT + 1)
             envelope = json.loads(raw) if len(raw) <= LIMIT else None
-            if not isinstance(envelope, dict) or set(envelope) != {"owner", "command"}:
+            if not isinstance(envelope, dict) or set(envelope) not in ({"owner", "command"}, {"owner", "binding"}):
                 raise ValueError()
         except (ValueError, TypeError):
             print(json.dumps({"ok": False, "error": "invalid_schedule_command"}))
@@ -29,8 +29,17 @@ def register(ctx):
         except RuntimeError:
             print(json.dumps({"ok": False, "error": "schedule_authorization_required"}))
             return
-        result = call_custody(ctx.get_config("api_origin") or "https://api.mithril.fund",
-                              token, envelope["owner"], envelope["command"])
+        def call(command):
+            return call_custody(ctx.get_config("api_origin") or "https://api.mithril.fund",
+                                token, envelope["owner"], command)
+        if 'binding' in envelope:
+            from .bindings import bind_original_source
+            try:
+                result = {'ok': True, 'receipt': bind_original_source(envelope['owner'], envelope['binding'], call)}
+            except Exception:
+                result = {'ok': False, 'error': 'schedule_binding_unconfirmed'}
+        else:
+            result = call(envelope['command'])
         print(json.dumps(result, ensure_ascii=False))
 
     ctx.register_cli_command("mithril-schedule-custody", "Inspect or reconcile original schedule custody", setup, cli)

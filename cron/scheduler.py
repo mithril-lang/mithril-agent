@@ -3155,6 +3155,14 @@ def _deliver_crash_failure(
 
 def _run_guarded_job_body(job: dict, **kwargs) -> bool:
     """Bind policy credentials before any original dispatch/script/delivery effect."""
+    from cron.execution_bindings import resolve_execution_binding
+    try:
+        job = resolve_execution_binding(job)
+    except Exception:
+        finish_execution(str(job["execution_id"]), success=False,
+                         error="Scheduled execution policy unavailable or unconfirmed.",
+                         delivery_outcome="suppressed")
+        return False
     # Only absence denotes an ordinary original job. A persisted but damaged
     # binding must still require policy; null cannot erase cloud custody.
     if "_execution_binding" not in job:

@@ -1,5 +1,5 @@
 name: mithril-schedules
-version: 0.2.0
+version: 0.3.0
 description: Original Mithril schedule execution custody policy and client
 entrypoint: __init__.py
 author: Mithril

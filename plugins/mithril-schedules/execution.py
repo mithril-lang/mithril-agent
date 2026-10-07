@@ -19,6 +19,10 @@ def bound_job_digest(job):
 def execute_bound_occurrence(ctx, *, args, next_call, **_):
     job = args
     binding = deepcopy(job.get('_execution_binding'))
+    source_binding = isinstance(binding, dict) and binding.get('kind') == 'original-source-v1'
+    if source_binding:
+        from .bindings import resolve_source_binding
+        binding = resolve_source_binding(job, binding)
     if (not isinstance(binding, dict) or set(binding) != {'policy', 'owner', 'jobDigest', 'occurrence'}
             or binding['policy'] != 'mithril-schedules'
             or binding['jobDigest'] != bound_job_digest(job)):
@@ -32,7 +36,7 @@ def execute_bound_occurrence(ctx, *, args, next_call, **_):
     except (ValueError, TypeError):
         raise RuntimeError('schedule_binding_unconfirmed') from None
     if (occurrence['jobId'] != job.get('id') or occurrence['operationId'] != job.get('execution_id')
-            or occurrence['scheduledInstant'] != job.get('_scheduled_instant')):
+            or (not source_binding and occurrence['scheduledInstant'] != job.get('_scheduled_instant'))):
         raise RuntimeError('schedule_binding_unconfirmed')
     token = get_secret('MITHRIL_API_KEY', '')
     api_origin = ctx.get_config('api_origin') or 'https://api.mithril.fund'
