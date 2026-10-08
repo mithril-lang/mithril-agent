@@ -558,6 +558,21 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS session_tool_attempts (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    attempt_id TEXT NOT NULL,
+    parent_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'blocked', 'rejected', 'not-dispatched', 'returned', 'returned-error')),
+    created_at REAL NOT NULL,
+    dispatched_at REAL,
+    settled_at REAL,
+    result_digest TEXT,
+    result_bytes INTEGER,
+    PRIMARY KEY (session_id, attempt_id)
+);
+
 CREATE TABLE IF NOT EXISTS async_delegations (
     delegation_id TEXT PRIMARY KEY,
     origin_session TEXT NOT NULL,

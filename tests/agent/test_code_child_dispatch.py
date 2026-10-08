@@ -13,7 +13,7 @@ def _agent():
     from run_agent import AIAgent
     definitions = [{"type": "function", "function": {"name": name,
         "description": name, "parameters": {"type": "object", "properties": {}}}}
-        for name in ["execute_code", "read_file"]]
+        for name in ["execute_code", "read_file", "write_file"]]
     with (patch("model_tools.get_tool_definitions", return_value=definitions),
           patch("model_tools.check_toolset_requirements", return_value={}),
           patch("agent.process_bootstrap.OpenAI"),
@@ -32,9 +32,16 @@ def test_code_child_uses_parent_guardrail_and_retires(tmp_path, kind):
     from tools.code_kernel import execute_in_session_kernel, shutdown_kernels_for_owner
     from tools.code_kernel_remote import execute_in_remote_kernel, shutdown_remote_kernels_for_owner
     from pm.shell import bash
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
 
     agent = _agent()
     task = f"parent-{tmp_path.name}"
+    db_path = get_hermes_home() / "state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session(session_id=task, source="test", model="test")
+    agent.session_id = task
+    agent._session_db = db
     path = tmp_path / "owned.txt"
     path.write_text("owned payload")
     args = {"path": str(path), "offset": 1, "limit": 2000}
@@ -63,12 +70,12 @@ def test_code_child_uses_parent_guardrail_and_retires(tmp_path, kind):
         saved.append(_default_dispatch(task))
         if kind == "local":
             result = json.loads(execute_in_session_kernel(code, task_id=task, mode="strict",
-                child_python=sys.executable, child_cwd=str(tmp_path), sandbox_tools=frozenset({"read_file"}),
+                child_python=sys.executable, child_cwd=str(tmp_path), sandbox_tools=frozenset({"read_file", "write_file"}),
                 timeout=20, max_tool_calls=2, reset=False, is_interrupted=lambda: False))
             assert result["exit_code"] == 0, result
             return result["output"].strip()
         result = execute_in_remote_kernel(code, env=transport, env_type="parent-policy-fixture",
-            task_env_id=task, sandbox_tools=frozenset({"read_file"}), timeout=20,
+            task_env_id=task, sandbox_tools=frozenset({"read_file", "write_file"}), timeout=20,
             max_tool_calls=2, reset=False, idle_exit=30)
         assert result is not None and result["status"] == "success", result
         return result["stdout"].strip()
@@ -85,9 +92,36 @@ def test_code_child_uses_parent_guardrail_and_retires(tmp_path, kind):
         assert "owned payload" in allowed["content"], allowed
         retired = json.loads(saved[-1]("read_file", args))
         assert "error" in retired and "no longer active" in retired["error"], retired
+        original = agent._invoke_tool
+
+        def lose_result(name, *call_args, **kwargs):
+            result = original(name, *call_args, **kwargs)
+            if name == "write_file":
+                raise RuntimeError("fixture: result lost after actual write")
+            return result
+
+        agent._invoke_tool = lose_result
+        code = ("import json\nfrom hermes_tools import write_file\n" +
+                f"print(json.dumps(write_file({str(path)!r}, 'landed mutation')))" )
+        unknown = json.loads(run())
+        assert "error" in unknown and path.read_text() == "landed mutation", unknown
+        rows = db._read_all("SELECT attempt_id FROM session_tool_attempts WHERE session_id=? ORDER BY created_at", (task,))
+        assert len(rows) == 3
+        reopened = SessionDB(db_path=db_path)
+        try:
+            receipts = [reopened.get_tool_attempt(task, row["attempt_id"]) for row in rows]
+            assert [receipt["state"] for receipt in receipts] == ["blocked", "returned", "running"]
+            assert all(receipt["terminal"] for receipt in receipts[:2])
+            assert not receipts[2]["terminal"] and receipts[2]["result_digest"] is None
+            assert all(receipt["parent_call_id"] == "parent-call" for receipt in receipts)
+            assert all(receipt["result_digest"] and receipt["result_bytes"] > 0 for receipt in receipts[:2])
+            assert "owned payload" not in json.dumps(receipts) and "landed mutation" not in json.dumps(receipts)
+        finally:
+            reopened.close()
     finally:
         shutdown_kernels_for_owner(task)
         shutdown_remote_kernels_for_owner(task)
+        db.close()
 
 
 def test_parent_dispatch_rechecks_profile_task_interrupt_and_current_grant(tmp_path, monkeypatch):

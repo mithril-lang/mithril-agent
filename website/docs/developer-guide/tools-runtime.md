@@ -333,6 +333,25 @@ policy connection, not an external tool-only RPC, expanded code allowlist,
 distributed budget/attempt ledger, confirmed cancellation or installed-runtime
 qualification.
 
+When that parent has an existing session database, code child dispatch records
+private attempt metadata in its profile-owned `session_tool_attempts` table.
+Claim an opaque host attempt ID before policy, commit `running` immediately before
+the handler, and settle with compare-and-set after it returns. Claims and terminal
+states cannot be overwritten or reused to dispatch again. A thrown/lost result
+after the effect leaves a nonterminal `running` record across database reopen;
+it must not be interpreted as no effect or permission to retry. A `returned`
+record proves handler return, not successful result delivery or confirmed stop;
+`returned-error` may still have effects.
+
+Rows retain parent call ID, tool name, timestamps, request/result digests and
+result byte count, not arguments, credentials or result bodies. Reads use both
+session ID and attempt ID inside the same profile database. Session deletion
+cascades the metadata. A replaced/foreign-profile database is rejected. Callers
+without a session database keep their existing in-process path. This is connected
+to the real local/remote code child consumers, but does not yet expose a receipt
+readback RPC, restore result payloads, supply stable client replay IDs or provide
+a distributed attempt/parent-budget contract.
+
 ## Related docs
 
 - [Toolsets Reference](../reference/toolsets-reference.md)
