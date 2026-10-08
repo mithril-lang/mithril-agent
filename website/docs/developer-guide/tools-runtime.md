@@ -147,6 +147,22 @@ verified by process liveness and removal of the owned temporary directory. This
 qualifies the remote **file protocol** locally; it does not qualify SSH, a hosted
 execution environment, inference or a distributed cancellation receipt.
 
+Kernel identity also includes the canonical `hermes_home_key()`. A conversation
+id, task id or delegated-child id is not globally unique across profiles. Both
+local and remote kernels capture the resolved profile at creation, retain reuse
+within that profile, and refuse to share Python state with another profile that
+uses the same owner id. Owner and delegated-child shutdown select only the calling
+profile's kernels; explicit unselected process-wide shutdown still closes all.
+Off-turn cleanup callers must bind the owning profile's full runtime scope, as
+session finalization and delegation already do.
+
+The same real-process test file covers A→B→A with identical owner, interpreter,
+working directory and tool selection in both local and remote transports. B cannot
+read A's namespace, returning to A retains its value, shutting down A preserves B,
+and reopening A starts clean. The preceding source fails both variants because B
+sees A's variable. This verifies profile state and teardown isolation, not dynamic
+schema admission, provider readiness, remote-host authentication or all tool effects.
+
 The real-shell regression in `tests/tools/test_code_execution_file_rpc.py` invokes
 the actual registry file reader and fails result transport, then observes later
 polls. The unchanged base executes the same request twice; the fixed path executes

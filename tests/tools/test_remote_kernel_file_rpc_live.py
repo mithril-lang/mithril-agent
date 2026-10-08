@@ -70,3 +70,71 @@ def test_remote_kernel_reuses_process_and_namespace_without_reusing_child_claims
         time.sleep(0.05)
     assert kernel is not None and not kernel.is_alive()
     assert not Path(kernel.kernel_dir).exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("kind", ["local", "remote"])
+@pytest.mark.parametrize("selector", ["owner", "delegated-child"])
+def test_same_owner_id_keeps_profile_kernel_state_and_shutdown_separate(tmp_path, monkeypatch, kind, selector):
+    import tui_gateway.server as server
+    from agent import secret_scope
+    from pm.shell import bash
+    from tools.code_kernel import (
+        execute_in_session_kernel, shutdown_kernels_for_owner, shutdown_kernels_for_delegated_child,
+    )
+    from tools.code_kernel_remote import execute_in_remote_kernel, shutdown_remote_kernels_for_owner
+
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+    for home in homes:
+        home.mkdir()
+    task = "same-public-session-id" + ("::child::shared-child" if selector == "delegated-child" else "")
+    shell = bash()
+    assert shell
+
+    class ShellTransport:
+        def get_temp_dir(self):
+            return str(tmp_path)
+
+        def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+            result = subprocess.run([shell, "-c", command], cwd=cwd, timeout=timeout,
+                env={"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "LANG": "C.UTF-8"},
+                input=stdin_data or "", capture_output=True, text=True)
+            return {"output": result.stdout, "returncode": result.returncode}
+
+    transport = ShellTransport()
+
+    def scope(home):
+        return server._session_profile_runtime_scope({"profile_home": str(home)}, hydrate_secrets=False)
+
+    def run(home, code):
+        with scope(home):
+            if kind == "local":
+                result = json.loads(execute_in_session_kernel(code, task_id=task, mode="strict",
+                    child_python=sys.executable, child_cwd=str(tmp_path), sandbox_tools=frozenset(),
+                    timeout=20, max_tool_calls=2, reset=False, is_interrupted=lambda: False))
+                assert result["exit_code"] == 0, result
+                return result["output"].strip()
+            result = execute_in_remote_kernel(code, env=transport, env_type="profile-fixture",
+                task_env_id=task, sandbox_tools=frozenset(), timeout=20,
+                max_tool_calls=2, reset=False, idle_exit=30)
+            assert result is not None and result["status"] == "success", result
+            return result["stdout"].strip()
+
+    def shutdown(home):
+        with scope(home):
+            if selector == "delegated-child":
+                shutdown_kernels_for_delegated_child("shared-child")
+            else:
+                (shutdown_kernels_for_owner if kind == "local" else shutdown_remote_kernels_for_owner)(task)
+
+    try:
+        assert run(homes[0], "value = 'profile-a'; print(value)") == "profile-a"
+        assert run(homes[1], "print('value' in globals()); value = 'profile-b'") == "False"
+        assert run(homes[0], "print(value)") == "profile-a"
+        shutdown(homes[0])
+        assert run(homes[1], "print(value)") == "profile-b"
+        assert run(homes[0], "print('value' in globals())") == "False"
+    finally:
+        for home in homes:
+            shutdown(home)
