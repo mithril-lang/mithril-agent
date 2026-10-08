@@ -31509,6 +31509,82 @@
         "title": "SessionTitleResult",
         "type": "object"
       },
+      "SessionToolSnapshot": {
+        "additionalProperties": false,
+        "description": "Actual model-visible schemas, not a grant or a complete deferred-tool manifest.\nRevision is server-local content identity, not the shared schemaHash algorithm.",
+        "properties": {
+          "protocol": {
+            "const": "hermes-session-tool-snapshot-v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "built",
+              "not-built"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "coverage": {
+            "const": "model-visible-only",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "context_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "registry_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registry Generation"
+          },
+          "definitions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Definitions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "protocol",
+          "status",
+          "coverage",
+          "context_id",
+          "revision",
+          "registry_generation",
+          "definitions"
+        ],
+        "title": "SessionToolSnapshot",
+        "type": "object"
+      },
       "SessionUndoParams": {
         "additionalProperties": false,
         "properties": {
@@ -36039,6 +36115,7 @@
       },
       "ToolsShowResult": {
         "additionalProperties": false,
+        "description": "Profile-resolved discovery includes deferred tools; runtime_snapshot is\nthe separate, frozen model-visible array. Neither establishes admission.",
         "properties": {
           "sections": {
             "items": {
@@ -36050,11 +36127,24 @@
           "total": {
             "title": "Total",
             "type": "integer"
+          },
+          "discovery_definitions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Discovery Definitions",
+            "type": "array"
+          },
+          "runtime_snapshot": {
+            "$ref": "#/components/schemas/SessionToolSnapshot"
           }
         },
         "required": [
           "sections",
-          "total"
+          "total",
+          "discovery_definitions",
+          "runtime_snapshot"
         ],
         "title": "ToolsShowResult",
         "type": "object"

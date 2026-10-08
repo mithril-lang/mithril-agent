@@ -3856,9 +3856,12 @@ export interface ToolsetRow {
   enabled: boolean
   tools?: string[] | null
 }
+/** Profile-resolved discovery includes deferred tools; runtime_snapshot is the separate, frozen model-visible array. Neither establishes admission. */
 export interface ToolsShowResult {
   sections: ToolShowSection[]
   total: number
+  discovery_definitions: Record<string, unknown>[]
+  runtime_snapshot: SessionToolSnapshot
 }
 export interface ToolShowSection {
   name: string
@@ -3867,6 +3870,16 @@ export interface ToolShowSection {
 export interface ToolShowRow {
   name: string
   description: string
+}
+/** Actual model-visible schemas, not a grant or a complete deferred-tool manifest. Revision is server-local content identity, not the shared schemaHash algorithm. */
+export interface SessionToolSnapshot {
+  protocol: 'hermes-session-tool-snapshot-v1'
+  status: 'built' | 'not-built'
+  coverage: 'model-visible-only'
+  context_id: string | null
+  revision: string | null
+  registry_generation: number | null
+  definitions: Record<string, unknown>[]
 }
 /** ``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's profile is authoritative and its agent is rebuilt. */
 export interface ToolsConfigureParams {

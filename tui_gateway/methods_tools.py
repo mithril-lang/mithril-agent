@@ -1244,7 +1244,9 @@ def _(rid, params: dict, session) -> dict:
             desc = desc[: desc.index(". ") + 1]
         sections.setdefault(mt.get_toolset_for_tool(name) or "unknown", []).append({"name": name, "description": desc})
     sections_out = [{"name": n, "tools": rows} for n, rows in sorted(sections.items())]
-    return _ok(rid, {"sections": sections_out, "total": len(tools)})
+    snapshot = _tools_mod("tui_gateway.tool_snapshot").session_tool_snapshot(session)
+    return _ok(rid, {"sections": sections_out, "total": len(tools),
+                     "discovery_definitions": tools, "runtime_snapshot": snapshot})
 
 
 @_rpc("tools.configure", 5035)

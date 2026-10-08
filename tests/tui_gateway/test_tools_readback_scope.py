@@ -144,3 +144,62 @@ def test_tool_schema_resolution_uses_each_sessions_secret_home(two_homes, monkey
     assert work == work_again and "file" in work and "terminal" in launch
     assert observed == ["worker-only", "launch-only", "worker-only"]
     assert dict(os.environ) == before
+
+
+def test_rpc_snapshot_tracks_published_schemas_and_owned_agent_generation(two_homes):
+    import copy
+    from types import SimpleNamespace
+    import model_tools
+    from tools.mcp_tool_agent import _agent_tools_lock
+
+    for sid, enabled in (("launch", LAUNCH_PIN), ("work", WORKER_PIN)):
+        session = two_homes[sid]
+        with server._session_profile_runtime_scope(session):
+            definitions = model_tools.get_tool_definitions(
+                enabled_toolsets=enabled, quiet_mode=True)
+        session["agent"] = SimpleNamespace(tools=definitions, enabled_toolsets=enabled,
+                                           disabled_toolsets=None, _tool_snapshot_generation=7)
+
+    def snapshot(sid):
+        token = server.bind_transport(two_homes[sid]["transport"])
+        try:
+            response = server._methods["tools.show"]("rid", {"session_id": sid})
+        finally:
+            server.reset_transport(token)
+        assert "result" in response, response
+        result = response["result"]
+        assert {d["function"]["name"] for d in result["discovery_definitions"]} == {
+            tool["name"] for section in result["sections"] for tool in section["tools"]}
+        assert len(result["discovery_definitions"]) == result["total"]
+        return response["result"]["runtime_snapshot"]
+
+    work, launch, repeated = snapshot("work"), snapshot("launch"), snapshot("work")
+    assert work == repeated and work["context_id"] != launch["context_id"]
+    assert work["definitions"] == two_homes["work"]["agent"].tools
+    assert work["coverage"] == "model-visible-only" and work["registry_generation"] == 7
+    # Returned schemas are copies; neither a client nor a concurrent publication
+    # can mutate an earlier snapshot or the conversation's frozen prefix.
+    original = copy.deepcopy(work)
+    work["definitions"][0]["function"]["parameters"]["description"] = "client mutation"
+    assert snapshot("work") == original
+    with _agent_tools_lock:
+        agent = two_homes["work"]["agent"]
+        agent.tools = copy.deepcopy(agent.tools)
+        agent.tools[0]["function"]["parameters"]["description"] = "published schema change"
+        agent._tool_snapshot_generation += 1
+    changed = snapshot("work")
+    assert changed["revision"] != original["revision"]
+    assert changed["context_id"] == original["context_id"]
+    assert changed["registry_generation"] == 8
+    two_homes["work"]["agent"] = copy.deepcopy(agent)
+    replaced = snapshot("work")
+    assert replaced["revision"] == changed["revision"]
+    assert replaced["context_id"] != changed["context_id"]
+    two_homes["work"]["profile_home"] = None
+    rehomed = snapshot("work")
+    assert rehomed["context_id"] != replaced["context_id"]
+    assert rehomed["revision"] == replaced["revision"]
+    two_homes["work"]["agent"] = None
+    unbuilt = snapshot("work")
+    assert unbuilt["status"] == "not-built" and unbuilt["definitions"] == []
+    assert unbuilt["context_id"] is None and unbuilt["revision"] is None
