@@ -27,10 +27,17 @@ def session_tool_snapshot(session: dict | None) -> dict:
         definitions = copy.deepcopy(getattr(agent, "tools", []))
         generation = getattr(agent, "_tool_snapshot_generation", None)
         home = session.get("profile_home")
+        cwd = session.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            raise ValueError("invalid owned working directory context")
+        # Relative targets belong to the selected working directory. Changing it
+        # retires old grants even when schemas/profile/agent stay identical.
         if (session.get("_tool_snapshot_agent") is not agent
-                or session.get("_tool_snapshot_home") != home):
+                or session.get("_tool_snapshot_home") != home
+                or session.get("_tool_snapshot_cwd") != cwd):
             session["_tool_snapshot_agent"] = agent
             session["_tool_snapshot_home"] = home
+            session["_tool_snapshot_cwd"] = cwd
             session["_tool_snapshot_context"] = uuid.uuid4().hex
         context = session["_tool_snapshot_context"]
     if not isinstance(definitions, list) or len(definitions) > 4096:

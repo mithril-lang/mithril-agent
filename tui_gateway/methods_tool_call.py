@@ -66,6 +66,16 @@ def _tool_only_run(rid, params, session, agent, db):
     try:
         if not authority():
             return _err(rid, 4092, "session schema context or authority changed")
+        # The private tool-only task must use this conversation's selected
+        # workspace and backend overrides, not a gateway process fallback cwd.
+        from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides
+        overrides = dict(resolve_task_overrides(owner))
+        cwd = session.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            overrides["cwd"] = cwd
+        register_task_env_overrides(task, overrides)
+        if not authority():
+            return _err(rid, 4092, "session workspace changed before tool dispatch")
         lease.start()
         dispatch = _ParentDispatch(agent, parent, root_tool=name, authority=authority)
         with _registered_tool_worker(agent), bind_tool_only_authority(authority), bind_subagent_parent(agent):

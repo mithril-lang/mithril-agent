@@ -717,3 +717,38 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
         thread.join(timeout=10)
         listener.close()
         assert not thread.is_alive()
+
+
+def test_owned_working_directory_context_retired_before_handler(owned_sessions):
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+
+    session = owned_sessions["a"]
+    home = Path(session["profile_home"])
+    next_dir = home / "next-target"
+    next_dir.mkdir()
+    (next_dir / "relative.txt").write_text("new-target")
+    (home / "relative.txt").write_text("original-target")
+    captured = session_tool_snapshot(session)
+    session["cwd"] = str(next_dir)
+    stale = _call(owned_sessions, "a", "a", "read_file", {"path": str(next_dir / "relative.txt")},
+                  "stale-cwd", context_id=captured["context_id"], revision=captured["revision"])
+    assert stale.get("error", {}).get("code") == 4092, stale
+    db = session["agent"]._session_db
+    assert db.get_tool_attempt("same-durable-owner", "rpc:stale-cwd") is None
+    fresh = _call(owned_sessions, "a", "a", "read_file", {"path": "relative.txt"}, "fresh-cwd")
+    assert fresh["result"]["state"] == "returned", fresh
+    assert "new-target" in json.dumps(fresh["result"]["output"])
+    changed = session_tool_snapshot(session)
+    session["cwd"] = str(home)
+    restored = session_tool_snapshot(session)
+    assert restored["context_id"] not in {captured["context_id"], changed["context_id"]}
+    assert restored["revision"] == captured["revision"]
+    stale_again = _call(owned_sessions, "a", "a", "read_file", {"path": str(next_dir / "relative.txt")},
+                       "aba-cwd", context_id=captured["context_id"], revision=captured["revision"])
+    assert stale_again.get("error", {}).get("code") == 4092, stale_again
+    assert db.get_tool_attempt("same-durable-owner", "rpc:aba-cwd") is None
+    fresh_home = _call(owned_sessions, "a", "a", "read_file", {"path": "relative.txt"}, "fresh-home-cwd")
+    assert fresh_home["result"]["state"] == "returned", fresh_home
+    assert "original-target" in json.dumps(fresh_home["result"]["output"])
+    assert "new-target" not in json.dumps(fresh_home["result"]["output"])
+    assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
