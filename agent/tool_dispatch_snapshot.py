@@ -50,6 +50,9 @@ class ToolDispatchSnapshot:
         self.deferred_names = frozenset(names) - self.published.keys()
         self.deferred = (_fingerprints(_deferred_definitions(agent))
                          if self.deferred_names else {})
+        from tools.dispatch_binding import capture_dispatch_binding
+        from tools.registry import registry
+        self.registrations = {name: capture_dispatch_binding(registry, name) for name in names}
 
     def rejection(self, name):
         try:
@@ -63,6 +66,13 @@ class ToolDispatchSnapshot:
                 return "The tool has no frozen schema in this parent dispatch."
             if expected is None or current != expected:
                 return "The tool schema changed during this parent dispatch."
+            from tools.registry import registry
+            if not self.registrations[name].matches(registry.get_entry(name)):
+                return "The tool registration changed during this parent dispatch."
         except (TypeError, ValueError, OverflowError):
             return "The tool schema is unavailable during this parent dispatch."
         return None
+
+    def bind_registration(self, name):
+        from tools.dispatch_binding import bind_dispatch_registration
+        return bind_dispatch_registration(self.registrations[name])

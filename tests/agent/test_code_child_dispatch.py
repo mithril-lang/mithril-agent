@@ -172,8 +172,8 @@ def test_parent_dispatch_rechecks_profile_task_interrupt_and_current_grant(tmp_p
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("kind", ["local", "remote"])
-@pytest.mark.parametrize("publication", ["published", "deferred"])
-def test_real_child_rejects_same_name_schema_change_after_policy_wait(tmp_path, monkeypatch, kind, publication):
+@pytest.mark.parametrize("publication", ["published", "deferred", "handler-policy", "handler-invocation"])
+def test_real_child_rejects_same_name_contract_change_after_policy_wait(tmp_path, monkeypatch, kind, publication):
     """A live schema replacement during policy cannot authorize a different child call."""
     import copy
     import threading
@@ -224,10 +224,34 @@ def test_real_child_rejects_same_name_schema_change_after_policy_wait(tmp_path, 
             original = copy.deepcopy(agent.tools)
             old_before = agent._tool_guardrails.before_call
             change = threading.Event()
+            marker = home / "replacement-effect.txt"
+            marker.unlink(missing_ok=True)
+
+            def replacement(args, **kwargs):
+                marker.write_text("replacement handler invoked")
+                return original_entry.handler(args, **kwargs)
+
+            def replace_handler():
+                registry.register("read_file", original_entry.toolset, copy.deepcopy(original_entry.schema),
+                    replacement, scope=str(home), override=True)
+
+            old_invoke = agent._invoke_tool
+
+            def invoke(tool_name, *args, **kwargs):
+                if tool_name == "read_file" and change.is_set() and publication == "handler-invocation":
+                    replace_handler()
+                return old_invoke(tool_name, *args, **kwargs)
+
+            agent._invoke_tool = invoke
 
             def before(tool_name, args):
                 decision = old_before(tool_name, args)
                 if tool_name == "read_file" and change.is_set():
+                    if publication == "handler-policy":
+                        replace_handler()
+                        return decision
+                    if publication == "handler-invocation":
+                        return decision
                     if publication == "deferred":
                         schema = copy.deepcopy(original_entry.schema)
                         schema["parameters"]["required"] = ["changed-field"]
@@ -268,13 +292,18 @@ def test_real_child_rejects_same_name_schema_change_after_policy_wait(tmp_path, 
                 assert agent.tools == original  # Snapshot capture does not republish model context.
                 change.set()
                 rejected = run()
-                assert "schema changed" in rejected.get("error", ""), rejected
+                expected_error = "registration changed" if publication.startswith("handler-") else "schema changed"
+                assert expected_error in rejected.get("error", ""), rejected
+                assert not marker.exists()
                 rows = db._read_all("SELECT * FROM session_tool_attempts WHERE session_id=? ORDER BY created_at", (task,))
-                assert rows[-1]["state"] == "rejected" and rows[-1]["dispatched_at"] is None
+                if publication == "handler-invocation":
+                    assert rows[-1]["state"] == "returned-error" and rows[-1]["dispatched_at"] is not None
+                else:
+                    assert rows[-1]["state"] == "rejected" and rows[-1]["dispatched_at"] is None
                 assert rows[-2]["state"] == "returned"
             finally:
                 shutdown_kernels_for_owner(task)
                 shutdown_remote_kernels_for_owner(task)
-                if publication == "deferred":
+                if publication != "published":
                     registry.deregister("read_file", scope=str(home))
                 db.close()

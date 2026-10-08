@@ -70,9 +70,10 @@ class _ParentDispatch:
                 return tool_error(rejected)
             self.attempts.dispatch(ref)
             dispatched = True
-            return self.agent._invoke_tool(name, final_args, task_id, ref.call_id,
-                pre_tool_block_checked=True, skip_tool_request_middleware=True,
-                skip_tool_execution_middleware=True, tool_request_middleware_trace=list(ref.trace))
+            with self.schemas.bind_registration(name):
+                return self.agent._invoke_tool(name, final_args, task_id, ref.call_id,
+                    pre_tool_block_checked=True, skip_tool_request_middleware=True,
+                    skip_tool_execution_middleware=True, tool_request_middleware_trace=list(ref.trace))
 
         managed = _run_agent_tool_execution_middleware(self.agent,
             **ref.middleware_kwargs(), execute=execute)

@@ -898,15 +898,17 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
+            from tools.dispatch_binding import resolve_dispatch_handler
+            handler, is_async = resolve_dispatch_handler(self, name, entry, scope)
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
             # plugin handler is not broken by every field the dispatcher injects (#68318).
-            kwargs = _kwargs_accepted_by(entry.handler, kwargs)
-            if entry.is_async:
+            kwargs = _kwargs_accepted_by(handler, kwargs)
+            if is_async:
                 from model_tools import _run_async
-                result = _run_async(entry.handler(args, **kwargs))
+                result = _run_async(handler(args, **kwargs))
             else:
-                result = entry.handler(args, **kwargs)
+                result = handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
             # exc_info already renders the exception, so keep the message copy bounded.
