@@ -70,6 +70,36 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
     return name, server_config, bearer_token
 
 
+
+def _normalize_mcp_server_update(body: MCPServerCreate, previous: Dict[str, Any], expanded: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    """Edit one owned entry without overwriting redacted secrets or dropping runtime policy."""
+    if body.bearer_token is not None:
+        raise ValueError("Provision credentials separately before editing an MCP server")
+    keep_header = body.auth == "header" and bool(previous.get("headers"))
+    if keep_header and (body.url or "").strip() != previous.get("url"):
+        raise ValueError("Header credentials cannot be reused at a changed server URL")
+    payload = body.model_copy(deep=True)
+    if keep_header:
+        payload.auth = None
+    masked = _redact_mcp_env(expanded.get("env") or {})
+    payload.env = {
+        key: previous.get("env", {}).get(key) if key in masked and value == masked[key] else value
+        for key, value in body.env.items()
+    }
+    name, replacement, _token = _normalize_mcp_server_create(payload)
+    if keep_header:
+        replacement["headers"] = previous["headers"]
+    # These fields are intentionally absent from the edit form; preserve their policy.
+    result = {key: value for key, value in previous.items()
+              if key not in {"url", "command", "args", "env", "auth", "headers"}}
+    result.update(replacement)
+    from hermes_cli.mcp_security import validate_mcp_server_entry
+    issues = validate_mcp_server_entry(name, result)
+    if issues:
+        raise ValueError(f"Server '{name}' rejected: {'; '.join(issues)}")
+    return name, result
+
+
 def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
     """Mask secret-shaped MCP env values for read responses."""
     out: Dict[str, str] = {}

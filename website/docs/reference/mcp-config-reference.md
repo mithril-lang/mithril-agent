@@ -441,3 +441,9 @@ const link = `hermes://mcp/install?name=example&config=${btoa(JSON.stringify(con
 ```
 
 Opening the link never installs anything by itself: the desktop app shows a confirmation dialog with the server name and the full pretty-printed config (with an extra caution for `command`-based servers, which run a local process), and the user must explicitly confirm. Existing server names are never overwritten — the user is asked to rename or cancel.
+
+## Dashboard edits
+
+`PUT /api/mcp/servers/{name}?profile=<profile>` edits or renames one configured server using the dashboard's existing authentication. The request uses the same fields as server creation. The server checks the source entry, destination-name collisions and plugin ownership inside the selected profile's config mutation lock, then writes the replacement once. Validation or write failure leaves the original entry intact.
+
+Fields absent from the edit form, including `enabled`, tool filters and timeout/TLS policy, remain attached to the entry. Unchanged redacted stdio environment values are restored from that same profile's original configuration; redacted values are never persisted as replacement credentials. Existing header credentials can be retained only at the same URL. This edit route does not provision new bearer tokens; credential provisioning remains a separate operation. Editing configuration takes effect through the existing next-session/reload lifecycle and does not prove that the MCP handshake or a tool call succeeded.
