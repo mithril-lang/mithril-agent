@@ -9,14 +9,25 @@ from hermes_constants import hermes_home_key
 
 
 _CURRENT = ContextVar("agent_code_child_dispatch", default=None)
+_ROOT_AUTHORITY = ContextVar("agent_tool_only_authority", default=None)
+
+
+@contextmanager
+def bind_tool_only_authority(authority):
+    token = _ROOT_AUTHORITY.set(authority)
+    try:
+        yield
+    finally:
+        _ROOT_AUTHORITY.reset(token)
 
 
 class _ParentDispatch:
-    def __init__(self, agent, parent):
+    def __init__(self, agent, parent, *, root_tool=None, authority=None):
         from agent.tool_executor import _tool_search_scoped_names
 
         self.agent = agent
         self.parent = parent
+        self.root_tool, self.authority = root_tool, authority
         self.home = hermes_home_key()
         self.turn = getattr(agent, "_current_turn_id", None)
         self.session = getattr(agent, "session_id", None)
@@ -32,6 +43,8 @@ class _ParentDispatch:
         from agent.tool_executor import _tool_search_scoped_names
         from tools.interrupt import is_thread_interrupted
 
+        if self.authority is not None and not self.authority():
+            return "The owning tool-only session authority has expired."
         if (not self.active or self.agent._interrupt_requested or is_thread_interrupted(self.thread)
                 or self.turn != getattr(self.agent, "_current_turn_id", None)
                 or self.session != getattr(self.agent, "session_id", None)):
@@ -41,11 +54,11 @@ class _ParentDispatch:
         if getattr(self.agent, "_session_db", None) is not self.attempts.db:
             return "The parent attempt database has been replaced."
         allowed = set(self.agent.valid_tool_names or ()) | _tool_search_scoped_names(self.agent)
-        if name not in self.names or name not in allowed or name == "execute_code":
+        if name not in self.names or name not in allowed or (name == "execute_code" and name != self.root_tool):
             return f"Tool '{name}' is not available to this parent agent."
         return self.schemas.rejection(name)
 
-    def dispatch(self, task_id, name, args):
+    def dispatch(self, task_id, name, args, *, call_id=None):
         from agent.tool_executor import (
             _ToolCallRef, _detect_tool_failure, _emit_tool_complete_and_risk,
             _run_agent_tool_execution_middleware,
@@ -57,7 +70,7 @@ class _ParentDispatch:
         rejected = self.rejection(task_id, name)
         if rejected:
             return tool_error(rejected)
-        ref = _ToolCallRef(name, args, task_id, uuid.uuid4().hex, [])
+        ref = _ToolCallRef(name, args, task_id, call_id or uuid.uuid4().hex, [])
         self.attempts.begin(ref, self.parent)
         dispatched = rejected_before_dispatch = False
 
@@ -99,7 +112,7 @@ class _ParentDispatch:
 
 @contextmanager
 def bind_code_child_dispatch(agent, parent):
-    dispatch = _ParentDispatch(agent, parent)
+    dispatch = _ParentDispatch(agent, parent, authority=_ROOT_AUTHORITY.get())
     token = _CURRENT.set(dispatch)
     try:
         yield

@@ -383,6 +383,51 @@ reads bounded metadata from the attached session without dispatch or retry;
 it does not restore result payloads, supply stable client replay IDs or provide
 a distributed attempt/parent-budget contract.
 
+## Owned tool-only RPC
+
+`tools.call` explicitly invokes one tool on an already built, attached agent and
+existing profile-owned durable session. It does not create/resume a conversation,
+submit a prompt, or start a second orchestration/model loop. A tool such as
+delegation or search may perform its own normal provider work. The caller supplies
+the current `tools.show.runtime_snapshot` context ID and server-local revision;
+that observation is checked against live state and never grants execution alone.
+
+The gateway claims the idle session under its existing admission lock, takes the
+cross-process conversation lease without waiting for another owner, binds the
+full profile/session/approval context, and uses the existing parent-bound agent
+dispatch. Normal request/execution middleware, guardrails, hooks, approval,
+mutation observation, frozen schemas and handler/store/callback fences apply.
+Root `execute_code` is admitted through the same policy and its children inherit
+the RPC's live attachment/context/lease/deadline authority. The production code
+sandbox allowlist remains unchanged.
+
+The execution task is stable for the owning durable session/profile, so successive
+root Python cells keep their variables without sharing them across profiles.
+Each request still receives a distinct turn/parent-call identity; no stale model
+API request ID is attached to tool-only work. In-process delegation inherits the
+owning agent context, rather than commissioning another orchestration loop.
+
+The caller's bounded `request_id` maps to `rpc:<request_id>` inside the exact
+durable session/profile. The same request returns attempt metadata only; a
+different request reusing that ID is rejected. Neither case redispatches. The
+gateway does not store result bodies. A write whose result is lost remains
+nonterminal `running`, and retry only reads that metadata. Results distinguish
+`handler-return`, `policy-result`, `metadata-only` and `unknown`; handler return
+does not prove client delivery or confirmed cancellation.
+
+`timeout_ms` bounds admission and nested child admission; after its deadline,
+lost authority or an oversized/unserializable result, withhold output and report
+unknown observation. This does not prove an already started handler/process has
+stopped. The lease is maintained while the synchronous handler is outstanding and
+released when it unwinds. Long RPC handlers run in the existing worker pool so
+the reader can still process approval answers and `session.interrupt`.
+
+This is gateway source/local functionality, not Web/Desktop host-adapter wiring,
+deployed-runtime qualification, a shared SDK schema hash/effect manifest, native
+target grants, distributed parent budgets/ledger or result/artifact recovery.
+Dynamic bridge/plugin internals and each provider/write/scheduler/delegation/MOA
+operation still need their own effect admission and live qualification evidence.
+
 ## Related docs
 
 - [Toolsets Reference](../reference/toolsets-reference.md)

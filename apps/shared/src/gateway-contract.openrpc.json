@@ -4147,6 +4147,24 @@
       }
     },
     {
+      "name": "tools.call",
+      "summary": "Invoke one tool through the attached agent policy without model inference; replay returns metadata only.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ToolsCallParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ToolsCallResult"
+        }
+      }
+    },
+    {
       "name": "tools.configure",
       "summary": "Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now.",
       "params": [
@@ -36177,6 +36195,128 @@
         ],
         "title": "ToolsAction",
         "type": "string"
+      },
+      "ToolsCallParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "context_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Context Id",
+            "type": "string"
+          },
+          "revision": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Revision",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "default": 120000,
+            "maximum": 120000,
+            "minimum": 1,
+            "title": "Timeout Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "name",
+          "arguments",
+          "request_id",
+          "context_id",
+          "revision"
+        ],
+        "title": "ToolsCallParams",
+        "type": "object"
+      },
+      "ToolsCallResult": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol": {
+            "const": "hermes-owned-tool-call-v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "attempt_id": {
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "running",
+              "blocked",
+              "rejected",
+              "not-dispatched",
+              "returned",
+              "returned-error"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "observation": {
+            "enum": [
+              "handler-return",
+              "policy-result",
+              "metadata-only",
+              "unknown"
+            ],
+            "title": "Observation",
+            "type": "string"
+          },
+          "output": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          }
+        },
+        "required": [
+          "protocol",
+          "attempt_id",
+          "state",
+          "terminal",
+          "duplicate",
+          "observation",
+          "output"
+        ],
+        "title": "ToolsCallResult",
+        "type": "object"
       },
       "ToolsChange": {
         "additionalProperties": false,

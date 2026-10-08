@@ -4349,6 +4349,24 @@ export interface ToolAttemptRow {
   result_digest: string | null
   result_bytes: number | null
 }
+export interface ToolsCallParams {
+  session_id: string
+  name: string
+  arguments: Record<string, unknown>
+  request_id: string
+  context_id: string
+  revision: string
+  timeout_ms?: number
+}
+export interface ToolsCallResult {
+  protocol: 'hermes-owned-tool-call-v1'
+  attempt_id: string
+  state: 'pending' | 'running' | 'blocked' | 'rejected' | 'not-dispatched' | 'returned' | 'returned-error'
+  terminal: boolean
+  duplicate: boolean
+  observation: 'handler-return' | 'policy-result' | 'metadata-only' | 'unknown'
+  output: unknown | null
+}
 /** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -5351,6 +5369,8 @@ export interface RpcMethods {
   'terminal.resize': { params: TerminalResizeParams; result: TerminalResizeResult }
   /** Read a bounded owned session attempt page; handler return is not delivery or confirmed stop. */
   'tools.attempts': { params: ToolAttemptsParams; result: ToolAttemptsResult }
+  /** Invoke one tool through the attached agent policy without model inference; replay returns metadata only. */
+  'tools.call': { params: ToolsCallParams; result: ToolsCallResult }
   /** Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now. */
   'tools.configure': { params: ToolsConfigureParams; result: ToolsConfigureResult }
   /** Every toolset with its resolved tool names, flagged against the session's (or config's) enabled set. */
@@ -5628,6 +5648,7 @@ export const RPC_METHODS = [
   'system.battery',
   'terminal.resize',
   'tools.attempts',
+  'tools.call',
   'tools.configure',
   'tools.list',
   'tools.show',
