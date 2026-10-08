@@ -461,3 +461,22 @@ provider or publication qualification.
 - [Built-in Tools Reference](../reference/tools-reference.md)
 - [Agent Loop Internals](./agent-loop.md)
 - [ACP Internals](./acp-internals.md)
+
+### Authenticated local WebSocket qualification
+
+The same explicit SDK qualifier also starts a private loopback ASGI server with
+the real dashboard `/api/ws` router, ticket consumer and WSTransport. A real Node
+WebSocket client presents a server-minted single-use ticket in the subprotocol;
+only `hermes-gateway-v1`, not the credential, is reflected. No credential and an
+already-consumed ticket both fail the upgrade. Actual `session.resume` reattaches
+the already-built profile agent, and the compiled SDK reads/writes through the
+real dispatcher. A fresh ticket reconnects to that same runtime; stable write
+replay returns metadata without overwriting the marked temporary file, and the
+owned attempt reader returns the stored state.
+
+The issuer identity, two-profile inventory and profile-home resolver are test
+fixtures, and background watchers are disabled for bounded teardown. Ticket
+validation, the actual route/upgrade/transport, reattachment, handlers, files and
+DB are real. This does not establish OAuth login, a public account, the Fund
+Worker relay/HTTP grant wiring, installed Desktop behavior or all-operation
+readiness. The listener, process and thread are closed after qualification.

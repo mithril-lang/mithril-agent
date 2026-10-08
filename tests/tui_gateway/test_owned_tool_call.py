@@ -338,3 +338,69 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
         for stream in [process.stdin, process.stdout, process.stderr]:
             stream.close()
         reader.join(timeout=5)
+
+
+@pytest.mark.platforms("posix")
+def test_compiled_owned_sdk_authenticated_websocket(owned_sessions, monkeypatch, request):
+    """Real local ASGI route/upgrade/ticket/reattachment, not an installed provider."""
+    import asyncio
+    import shutil
+    import socket
+    import subprocess
+    import time
+    from fastapi import FastAPI
+    import uvicorn
+    import hermes_cli.web_server as web
+    from hermes_cli.web_routers import chat_ws
+    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    import tui_gateway.server as server
+    from agent.memory_provider import spawn_context_thread
+
+    module = request.config.getoption("--owned-sdk-module")
+    node = shutil.which("node")
+    if not module or not node:
+        pytest.skip("cross-repository qualifier needs compiled SDK module and Node")
+    home = Path(owned_sessions["a"]["profile_home"])
+    (home / "ws-owned.txt").write_text("ws-owned")
+    monkeypatch.setattr(web.app.state, "auth_required", True, raising=False)
+    monkeypatch.setattr(chat_ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    monkeypatch.setattr(server, "_profile_home", lambda profile: home if profile == "a" else None)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    for name in ["_ensure_skin_watcher", "_ensure_lease_watcher",
+                 "_start_backend_heartbeat_refresher", "_schedule_startup_orphan_sweep"]:
+        monkeypatch.setattr(server, name, lambda: None)
+    app = FastAPI()
+    app.include_router(chat_ws.router)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    service = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
+    thread = spawn_context_thread(
+        target=lambda: asyncio.run(service.serve(sockets=[listener])), name="owned-ws-qualifier")
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not service.started and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert service.started
+        config = {"url": f"ws://127.0.0.1:{port}/api/ws",
+                  "tickets": [mint_ticket(user_id="fixture-owner", provider="stub") for _ in range(2)],
+                  "input": str(home / "ws-owned.txt"), "output": str(home / "ws-output.txt")}
+        process = subprocess.Popen(
+            [node, str(Path(__file__).parent / "fixtures" / "owned_sdk_websocket.mjs"), module],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = process.communicate(json.dumps(config) + "\n", timeout=60)
+            assert process.returncode == 0, stderr
+            assert json.loads(stdout) == {"passed": True, "transport": "authenticated-websocket", "reconnect": True}
+            assert (home / "ws-output.txt").read_text() == "effect-already-delivered"
+            assert owned_sessions["a"]["agent"]._session_messages == [{"role": "user", "content": "owned conversation"}]
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+    finally:
+        service.should_exit = True
+        thread.join(timeout=10)
+        listener.close()
+        assert not thread.is_alive()
