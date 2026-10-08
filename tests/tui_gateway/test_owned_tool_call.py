@@ -227,3 +227,114 @@ def test_owned_call_rejects_lost_authority_and_preserves_unknown(owned_sessions,
             ToolsCallParams.model_validate({**params, **invalid})
         rejected = _call(owned_sessions, "b", "b", "read_file", {}, "invalid", **invalid)
         assert rejected["error"]["code"] == 4000
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("mode", ["roundtrip", "lost-result"])
+def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mode, request):
+    """Real Node SDK pipes reach the real dispatcher/agent/DB, not JSON reply fixtures.
+
+    Opt-in cross-repository qualifier: --owned-sdk-module identifies the
+    already-built SDK module. It is not a runtime configuration or provider key.
+    """
+    import shutil
+    import subprocess
+    import tui_gateway.server as server
+    from tui_gateway.transport import StdioTransport
+
+    module = request.config.getoption("--owned-sdk-module")
+    node = shutil.which("node")
+    if not module or not node:
+        pytest.skip("cross-repository qualifier needs a compiled owned SDK module and Node")
+    assert Path(module).is_file(), "compiled SDK module missing"
+    roots = {key: value["profile_home"] for key, value in owned_sessions.items()}
+    for home in roots.values():
+        for visit in range(3):
+            for prefix in ["owned", "child"]:
+                (Path(home) / f"{prefix}-{visit}.txt").write_text(f"{Path(home).name}-owned")
+    if mode == "lost-result":
+        agent = owned_sessions["a"]["agent"]
+        original = agent._invoke_tool
+
+        def lose_after_effect(name, *args, **kwargs):
+            result = original(name, *args, **kwargs)
+            if name == "write_file":
+                raise RuntimeError("qualification lost handler result after actual write")
+            return result
+
+        monkeypatch.setattr(agent, "_invoke_tool", lose_after_effect)
+    process = subprocess.Popen(
+        [node, str(Path(__file__).parent / "fixtures" / "owned_sdk_stdio.mjs"),
+         str(Path(module).resolve()), mode, json.dumps(roots)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    lock = threading.Lock()
+    transports = {
+        key: StdioTransport(lambda: process.stdin, lock) for key in owned_sessions
+    }
+    for key, session in owned_sessions.items():
+        session["transport"] = transports[key]
+    report, failures, methods = [], [], []
+
+    def read_requests():
+        active = "a"
+        try:
+            for line in process.stdout:
+                request = json.loads(line)
+                method, params = request["method"], request["params"]
+                if method == "fixture.select":
+                    assert params["owner"] in owned_sessions
+                    active = params["owner"]
+                    reply = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
+                elif method == "fixture.mark":
+                    path = Path(params["path"])
+                    assert path.parent == Path(roots[active])
+                    assert path.read_text() == (
+                        "effect-before-loss" if mode == "lost-result"
+                        else f"{active}-effect-{path.stem.split('-')[-1]}"
+                    )
+                    path.write_text("effect-already-delivered")
+                    reply = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
+                elif method == "fixture.report":
+                    report.append(params)
+                    reply = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
+                else:
+                    assert method in {"tools.show", "tools.call", "tools.attempts"}
+                    methods.append(method)
+                    reply = server.dispatch(request, transport=transports[active])
+                if reply is not None:
+                    transports[active].write(reply)
+        except Exception as exc:
+            failures.append(str(exc))
+            process.kill()
+
+    # Capture the same runtime context as a gateway reader; tool handlers retain
+    # the real dispatcher's async worker/transport/profile binding.
+    from agent.memory_provider import spawn_context_thread
+    reader = spawn_context_thread(target=read_requests, name="owned-sdk-qualifier")
+    reader.start()
+    try:
+        assert process.wait(timeout=90) == 0, process.stderr.read()
+        reader.join(timeout=5)
+        assert not reader.is_alive() and not failures, failures
+        assert report == [{"mode": mode, "passed": True}]
+        assert "tools.call" in methods and "tools.attempts" in methods
+        for session in owned_sessions.values():
+            assert session["agent"]._session_messages == [{"role": "user", "content": "owned conversation"}]
+            assert not session["running"]
+        if mode == "roundtrip":
+            for owner, session in owned_sessions.items():
+                assert session["agent"]._todo_store.read()[0]["content"] == f"{owner}-todo"
+            for visit, owner in enumerate(["a", "b", "a"]):
+                assert (Path(roots[owner]) / f"sdk-{visit}.txt").read_text() == "effect-already-delivered"
+        else:
+            assert (Path(roots["a"]) / "lost.txt").read_text() == "effect-already-delivered"
+            db = owned_sessions["a"]["agent"]._session_db
+            assert db.get_tool_attempt("same-durable-owner", "rpc:lost-stable")["state"] == "running"
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        for stream in [process.stdin, process.stdout, process.stderr]:
+            stream.close()
+        reader.join(timeout=5)

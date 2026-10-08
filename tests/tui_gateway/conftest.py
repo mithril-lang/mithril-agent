@@ -8,3 +8,8 @@ Importing it once here, before any window opens, keeps boot out of the mocked im
 """
 
 import hermes_bootstrap  # noqa: F401
+
+
+def pytest_addoption(parser):
+    parser.addoption("--owned-sdk-module", default=None,
+                     help="Path to the already-built Mithril owned gateway SDK module")

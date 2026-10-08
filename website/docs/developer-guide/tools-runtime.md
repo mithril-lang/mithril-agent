@@ -428,6 +428,33 @@ target grants, distributed parent budgets/ledger or result/artifact recovery.
 Dynamic bridge/plugin internals and each provider/write/scheduler/delegation/MOA
 operation still need their own effect admission and live qualification evidence.
 
+### Cross-language owned SDK qualification
+
+The opt-in `tests/tui_gateway/test_owned_tool_call.py` cross-repository qualifier
+runs the already-built Mithril SDK in a real Node subprocess. Its JSON-RPC pipes
+reach the actual Hermes dispatcher, worker pool, StdioTransport, agent tools and
+profile-owned SessionDB. Provider construction and the four-tool inventory are
+controlled fixtures; no inference or provider request runs. Test-only controls
+select the already-built profile and mark temporary files to detect replay.
+
+Run with the canonical runner, forwarding the explicit pytest option after `--`:
+
+```sh
+HERMES_PYTHON="$PWD/.venv/bin/python" scripts/run_tests.sh \
+  tests/tui_gateway/test_owned_tool_call.py -j 2 -- \
+  --owned-sdk-module=/path/to/built/workspace/dist/owned-gateway-tools.js
+```
+
+Without that module or Node the cross-repository cases skip, rather than pretending
+to qualify integration. Successful cases verify A→B→A read/write/todo/root Python,
+profile-separated persistent cells, actual nested child reads, metadata-only
+write/Python replay, foreign ownership rejection and real attempt readback.
+The lost-result case performs a real temporary write before withholding the
+handler result; stable replay preserves `running`/unknown and the marked file.
+This is local pipe integration, not an authenticated WebSocket connection,
+Web HTTP grant wiring, a real QuickJS/Pyodide parent, installed client, external
+provider or publication qualification.
+
 ## Related docs
 
 - [Toolsets Reference](../reference/toolsets-reference.md)
