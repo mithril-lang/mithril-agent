@@ -744,6 +744,10 @@ def _dispatch_authorized_once(
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
+    if ref.name == "execute_code":
+        from agent.code_child_dispatch import bind_code_child_dispatch
+        with bind_code_child_dispatch(agent, ref):
+            return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
     return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
 
 

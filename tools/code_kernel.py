@@ -264,7 +264,7 @@ class CellAuthority:
         return self.ctx.run(self._invoke, tool_name, tool_args)
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
-        from model_tools import handle_function_call
+        from tools.code_execution_rpc import _default_dispatch
         previous = None
         if self._callbacks:
             try:
@@ -274,7 +274,7 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            return _default_dispatch(self.task_id)(tool_name, tool_args)
         finally:
             if previous is not None:
                 try:

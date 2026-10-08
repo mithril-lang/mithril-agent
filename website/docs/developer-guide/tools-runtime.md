@@ -303,6 +303,24 @@ that route immediately. Callers still bind the owning profile and acquire the
 normal turn authority; this resolver is not a standalone tool-only RPC, lease,
 budget or durable receipt contract.
 
+During normal agent `execute_code` dispatch, `agent/code_child_dispatch.py` binds
+the existing local socket and remote file-RPC child consumers to the owning
+agent's middleware, plugin/pruned-argument checks, guardrails, approval callbacks,
+checkpoint preflight and mutation observation. Parent task, profile, session,
+turn and worker interruption are checked before admission and again before the
+effect dispatch. Names are limited to the parent's starting scope and intersected
+with its current scope; the existing code sandbox allowlist and per-cell budget
+still apply. The binding retires when the parent dispatch exits, including for
+callbacks captured by old cell contexts. Standalone code-tool callers retain the
+existing registry route.
+
+Child results remain structured data: guardrail counters observe them without
+replacing repeated results with model-transcript stubs or appending guidance.
+No child message is inserted into conversation history. This is an in-turn
+policy connection, not an external tool-only RPC, expanded code allowlist,
+distributed budget/attempt ledger, confirmed cancellation or installed-runtime
+qualification.
+
 ## Related docs
 
 - [Toolsets Reference](../reference/toolsets-reference.md)
