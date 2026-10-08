@@ -4325,6 +4325,30 @@ export interface OnboardingCatalogPlugin {
   app_state: CatalogAppState
   sentence: string
 }
+export interface ToolAttemptsParams {
+  session_id: string
+  limit?: number
+  before_attempt_id?: string | null
+}
+export interface ToolAttemptsResult {
+  protocol: 'hermes-tool-attempts-v1'
+  coverage: 'exact-session-metadata-only'
+  available: boolean
+  attempts: ToolAttemptRow[]
+  next_cursor: string | null
+}
+export interface ToolAttemptRow {
+  attempt_id: string
+  parent_call_id: string
+  tool_name: string
+  state: 'pending' | 'running' | 'blocked' | 'rejected' | 'not-dispatched' | 'returned' | 'returned-error'
+  terminal: boolean
+  created_at: number
+  dispatched_at: number | null
+  settled_at: number | null
+  result_digest: string | null
+  result_bytes: number | null
+}
 /** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -5325,6 +5349,8 @@ export interface RpcMethods {
   'system.battery': { params: SystemBatteryParams; result: SystemBatteryResult }
   /** Record the client's column width for server-side rendering. */
   'terminal.resize': { params: TerminalResizeParams; result: TerminalResizeResult }
+  /** Read a bounded owned session attempt page; handler return is not delivery or confirmed stop. */
+  'tools.attempts': { params: ToolAttemptsParams; result: ToolAttemptsResult }
   /** Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now. */
   'tools.configure': { params: ToolsConfigureParams; result: ToolsConfigureResult }
   /** Every toolset with its resolved tool names, flagged against the session's (or config's) enabled set. */
@@ -5601,6 +5627,7 @@ export const RPC_METHODS = [
   'subscription.upgrade',
   'system.battery',
   'terminal.resize',
+  'tools.attempts',
   'tools.configure',
   'tools.list',
   'tools.show',

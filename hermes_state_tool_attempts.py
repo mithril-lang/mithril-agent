@@ -4,6 +4,26 @@ import time
 
 
 class SessionToolAttemptsMixin:
+    def list_tool_attempts(self, session_id, *, limit=50, before_attempt_id=None):
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("Attempt page limit must be between 1 and 100")
+        predicates, params = ["session_id=?"], [session_id]
+        if before_attempt_id:
+            cursor = self.get_tool_attempt(session_id, before_attempt_id)
+            if cursor is None:
+                raise ValueError("Attempt cursor is unavailable for this session")
+            predicates.append("(created_at<? OR (created_at=? AND attempt_id<?))")
+            params.extend([cursor["created_at"], cursor["created_at"], before_attempt_id])
+        params.append(limit + 1)
+        rows = self._read_all("SELECT attempt_id FROM session_tool_attempts WHERE " +
+            " AND ".join(predicates) + " ORDER BY created_at DESC, attempt_id DESC LIMIT ?", params)
+        attempts = [self.get_tool_attempt(session_id, row["attempt_id"]) for row in rows[:limit]]
+        # Session deletion may race the read: never serialize a partial page as complete.
+        if any(attempt is None for attempt in attempts):
+            raise RuntimeError("Attempt page changed during readback")
+        return {"attempts": attempts,
+                "next_cursor": attempts[-1]["attempt_id"] if len(rows) > limit else None}
+
     def begin_tool_attempt(self, session_id, attempt_id, parent_call_id, tool_name, request_digest):
         def claim(conn):
             cursor = conn.execute("""INSERT OR IGNORE INTO session_tool_attempts

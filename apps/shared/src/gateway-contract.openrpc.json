@@ -4129,6 +4129,24 @@
       }
     },
     {
+      "name": "tools.attempts",
+      "summary": "Read a bounded owned session attempt page; handler return is not delivery or confirmed stop.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ToolAttemptsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ToolAttemptsResult"
+        }
+      }
+    },
+    {
       "name": "tools.configure",
       "summary": "Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now.",
       "params": [
@@ -35614,6 +35632,185 @@
           "revision"
         ],
         "title": "TodoUpdatedPayload",
+        "type": "object"
+      },
+      "ToolAttemptRow": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "parent_call_id": {
+            "title": "Parent Call Id",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "running",
+              "blocked",
+              "rejected",
+              "not-dispatched",
+              "returned",
+              "returned-error"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispatched At"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At"
+          },
+          "result_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Digest"
+          },
+          "result_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Bytes"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "parent_call_id",
+          "tool_name",
+          "state",
+          "terminal",
+          "created_at",
+          "dispatched_at",
+          "settled_at",
+          "result_digest",
+          "result_bytes"
+        ],
+        "title": "ToolAttemptRow",
+        "type": "object"
+      },
+      "ToolAttemptsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "before_attempt_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Before Attempt Id"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ToolAttemptsParams",
+        "type": "object"
+      },
+      "ToolAttemptsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol": {
+            "const": "hermes-tool-attempts-v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "coverage": {
+            "const": "exact-session-metadata-only",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ToolAttemptRow"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "protocol",
+          "coverage",
+          "available",
+          "attempts",
+          "next_cursor"
+        ],
+        "title": "ToolAttemptsResult",
         "type": "object"
       },
       "ToolCompletePayload": {
