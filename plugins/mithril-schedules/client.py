@@ -33,13 +33,21 @@ def integer(value, minimum=0):
     return type(value) is int and minimum <= value < 2**53
 
 
+def epoch_fields(value, fields):
+    if "datasetGeneration" in value:
+        if not integer(value["datasetGeneration"]):
+            raise ValueError()
+        return fields | {"datasetGeneration"}
+    return fields
+
+
 def validate_command(command):
     if not isinstance(command, dict) or not isinstance(command.get("profile"), str):
         raise ValueError()
     action = command.get("action")
     fields = {"status": {"action", "profile"}, "select": {"action", "profile", "expectedRevision"},
               "claim": OCCURRENCE | {"action"}, "transition": OCCURRENCE | {"action", "from", "to"}}
-    if action not in fields or set(command) != fields[action]:
+    if action not in fields or set(command) != epoch_fields(command, fields[action]):
         raise ValueError()
     if action == "select" and not integer(command["expectedRevision"]):
         raise ValueError()
@@ -58,9 +66,12 @@ def validate_command(command):
 def receipt(value, owner, command):
     if not isinstance(value, dict) or value.get("userId") != owner or value.get("profile") != command["profile"]:
         raise ValueError()
+    epoch_fields(value, set())
     action = command["action"]
+    if action != "status" and value.get("datasetGeneration", 0) != command.get("datasetGeneration", 0):
+        raise ValueError()
     if action in ("status", "select"):
-        if set(value) != {"userId", "profile", "selected", "revision"} or type(value["selected"]) is not bool or not integer(value["revision"]):
+        if set(value) != epoch_fields(value, {"userId", "profile", "selected", "revision"}) or type(value["selected"]) is not bool or not integer(value["revision"]):
             raise ValueError()
         if action == "select" and (not value["selected"] or value["revision"] != command["expectedRevision"] + 1):
             raise ValueError()
@@ -68,11 +79,11 @@ def receipt(value, owner, command):
         if value.get("operationId") != command["operationId"]:
             raise ValueError()
         if action == "claim":
-            if (set(value) != {"userId", "profile", "operationId", "status", "fresh"}
+            if (set(value) != epoch_fields(value, {"userId", "profile", "operationId", "status", "fresh"})
                     or value["status"] not in ("admitted", "running", "completed", "unknown")
                     or type(value["fresh"]) is not bool or (value["fresh"] and value["status"] != "admitted")):
                 raise ValueError()
-        elif set(value) != {"userId", "profile", "operationId", "changed"} or type(value["changed"]) is not bool:
+        elif set(value) != epoch_fields(value, {"userId", "profile", "operationId", "changed"}) or type(value["changed"]) is not bool:
             raise ValueError()
     return value
 

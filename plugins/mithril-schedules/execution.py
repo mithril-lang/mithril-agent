@@ -3,7 +3,7 @@ import hashlib
 import json
 from copy import deepcopy
 from agent.secret_scope import get_secret
-from .client import OCCURRENCE, call_custody, validate_command
+from .client import OCCURRENCE, call_custody, epoch_fields, validate_command
 
 # These are attempt-local fields, never authored schedule/resource definitions.
 _ATTEMPT_FIELDS = {'_execution_binding', 'execution_id', '_scheduled_instant',
@@ -28,10 +28,12 @@ def execute_bound_occurrence(ctx, *, args, next_call, **_):
             or binding['jobDigest'] != bound_job_digest(job)):
         raise RuntimeError('schedule_binding_unconfirmed')
     occurrence = binding['occurrence']
-    if not isinstance(occurrence, dict) or set(occurrence) != OCCURRENCE:
+    if not isinstance(occurrence, dict):
         raise RuntimeError('schedule_binding_unconfirmed')
     command = {'action': 'claim', **occurrence} if isinstance(occurrence, dict) else {}
     try:
+        if set(occurrence) != epoch_fields(occurrence, OCCURRENCE):
+            raise ValueError()
         validate_command(command)
     except (ValueError, TypeError):
         raise RuntimeError('schedule_binding_unconfirmed') from None

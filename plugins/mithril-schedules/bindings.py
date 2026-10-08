@@ -8,7 +8,7 @@ from cron import jobs
 from cron.source_restore import _read, _parse, _rows
 from cron.execution_bindings import install_execution_bindings, read_execution_binding_snapshot, require_execution_policy
 from hermes_constants import get_hermes_home, profile_name_for_home
-from .client import integer, validate_command
+from .client import integer, validate_command, epoch_fields
 from .execution import _ATTEMPT_FIELDS
 
 _BOOKKEEPING = _ATTEMPT_FIELDS | {
@@ -34,7 +34,7 @@ def bind_original_source(owner, anchor, call):
     """Native-only producer after portable publication and local resource verification."""
     if (not isinstance(owner, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}', owner)
             or not isinstance(anchor, dict)
-            or set(anchor) != {'profile', 'sourceRevision', 'sourceDigest', 'authorityRevision', 'nativeVersion'}
+            or set(anchor) != epoch_fields(anchor, {'profile', 'sourceRevision', 'sourceDigest', 'authorityRevision', 'nativeVersion'})
             or not isinstance(anchor['profile'], str)
             or profile_name_for_home(get_hermes_home()) != anchor['profile']
             or not integer(anchor['sourceRevision'], 1) or not integer(anchor['authorityRevision'], 1)
@@ -45,23 +45,27 @@ def bind_original_source(owner, anchor, call):
     validate_command(status_command)
     selected = call(status_command)
     if (not selected['ok']
-            or selected['receipt']['revision'] != anchor['authorityRevision']):
+            or selected['receipt']['revision'] != anchor['authorityRevision']
+            or selected['receipt'].get('datasetGeneration', 0) != anchor.get('datasetGeneration', 0)):
         raise ValueError('schedule_authority_unconfirmed')
     source = _read(jobs._current_cron_store().jobs_file)
     if source is None or hashlib.sha256(source).hexdigest() != anchor['nativeVersion']:
         raise ValueError('schedule_source_changed')
     previous, previous_version = read_execution_binding_snapshot(allow_uninitialized=True)
     for old in (previous or {}).values():
-        if (set(old) != SOURCE_FIELDS or old['owner'] != owner or old['profile'] != anchor['profile']
+        if (set(old) != epoch_fields(old, SOURCE_FIELDS) or old['owner'] != owner or old['profile'] != anchor['profile']
                 or old['policy'] != 'mithril-schedules' or old['kind'] != 'original-source-v1'
-                or old['sourceRevision'] > anchor['sourceRevision']
-                or old['authorityRevision'] > anchor['authorityRevision']
-                or (old['sourceRevision'] == anchor['sourceRevision'] and old['sourceDigest'] != anchor['sourceDigest'])):
+                or old.get('datasetGeneration', 0) > anchor.get('datasetGeneration', 0)
+                or (old.get('datasetGeneration', 0) == anchor.get('datasetGeneration', 0) and (
+                    old['sourceRevision'] > anchor['sourceRevision']
+                    or old['authorityRevision'] > anchor['authorityRevision']
+                    or (old['sourceRevision'] == anchor['sourceRevision'] and old['sourceDigest'] != anchor['sourceDigest'])))):
             raise ValueError('schedule_binding_conflict')
     value = {row['id']: {'kind': 'original-source-v1', 'policy': 'mithril-schedules',
              'owner': owner, 'profile': anchor['profile'], 'sourceRevision': anchor['sourceRevision'],
              'sourceDigest': anchor['sourceDigest'], 'authorityRevision': anchor['authorityRevision'],
-             'definitionDigest': definition_digest(row)} for row in _rows(_parse(source))}
+             'definitionDigest': definition_digest(row),
+             **({'datasetGeneration': anchor['datasetGeneration']} if 'datasetGeneration' in anchor else {})} for row in _rows(_parse(source))}
     digest = install_execution_bindings(value, anchor['nativeVersion'], previous_version)
     return {'owner': owner, **anchor, 'bindingDigest': digest}
 
@@ -71,7 +75,7 @@ def resolve_source_binding(job, binding):
     from cron.executions import get_execution
     from cron.occurrences import scheduled_instant
     from .execution import bound_job_digest
-    if (set(binding) != SOURCE_FIELDS or binding['kind'] != 'original-source-v1'
+    if (set(binding) != epoch_fields(binding, SOURCE_FIELDS) or binding['kind'] != 'original-source-v1'
             or binding['policy'] != 'mithril-schedules'
             or profile_name_for_home(get_hermes_home()) != binding['profile']
             or binding['definitionDigest'] != definition_digest(job)):
@@ -92,7 +96,8 @@ def resolve_source_binding(job, binding):
             'occurrence': {'profile': binding['profile'], 'jobId': job['id'],
                            'operationId': job['execution_id'], 'scheduledInstant': instant,
                            'sourceRevision': binding['sourceRevision'], 'sourceDigest': binding['sourceDigest'],
-                           'authorityRevision': binding['authorityRevision']}}
+                           'authorityRevision': binding['authorityRevision'],
+                           **({'datasetGeneration': binding['datasetGeneration']} if 'datasetGeneration' in binding else {})}}
 
 
 def prepare_original_source(owner, request, call):

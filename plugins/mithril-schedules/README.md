@@ -35,3 +35,21 @@ Passive replicas may persist original source bindings at the current authority r
 
 
 The current private-policy reader checks POSIX owner identity through an available UID API and refuses confirmation if that API is missing. Windows does not access a POSIX UID primitive. Direct bootstrap diagnostic suppression uses explicit UTF-8 for its text sink. These portability checks do not grant execution custody or qualify a released installer.
+
+### Restoration generation custody (candidate)
+
+Original source anchors and private execution policies retain the captured
+`datasetGeneration`. Missing fields mean legacy generation zero; positive fields
+must be safe integers. Binding compares the captured generation with the current
+cloud status before persisting it. Every occurrence claim and transition carries
+that same generation, and acknowledgement validators refuse missing or changed
+generations. An old policy is never silently rebased after restore. A legitimately
+new generation can bind a restored source with a lower source revision, after its
+cloud status matches; revisions remain monotonic within one generation.
+
+The canonical custody suite passed 10 tests, including real CLI binding and fresh
+shell workers across A/B/A profiles in generations zero and one. Advancing the
+HTTP peer generation with identical source metadata rejects the old policy without
+another shell effect. Bootstrap/publication qualification passed 15 tests. These
+local process and HTTP tests do not prove production publication, installed Agent
+upgrades, running-work restoration or authenticated multi-device synchronization.

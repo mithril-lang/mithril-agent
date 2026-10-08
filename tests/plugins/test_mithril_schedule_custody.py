@@ -4,6 +4,7 @@ import io
 import json
 import subprocess
 import sys
+import pytest
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,13 +38,15 @@ print(json.dumps({'processed': processed, 'execution': executions.get_execution(
 '''
 
 
-def test_durable_original_source_binding_survives_process_and_profile_restarts(tmp_path):
+@pytest.mark.parametrize("dataset_generation", [0, 1])
+def test_durable_original_source_binding_survives_process_and_profile_restarts(tmp_path, dataset_generation):
     import hashlib
     import stat
     from cron import jobs
     from cron.occurrences import scheduled_instant
     checkout = Path(__file__).resolve().parents[2]
     with server() as (url, calls, mode):
+        mode['generation'] = dataset_generation
         for generation, name in enumerate(['a', 'b', 'a'], 1):
             home = tmp_path / 'profiles' / name
             home.mkdir(parents=True, exist_ok=True)
@@ -68,6 +71,8 @@ def test_durable_original_source_binding_survives_process_and_profile_restarts(t
                 env = {'HERMES_HOME': str(home), 'MITHRIL_API_KEY': 'mf_' + name*32, 'PATH': '/usr/bin:/bin'}
                 anchor = {'profile': name, 'sourceRevision': generation, 'sourceDigest': hashlib.sha256(before).hexdigest(),
                           'authorityRevision': 1, 'nativeVersion': hashlib.sha256(before).hexdigest()}
+                if dataset_generation:
+                    anchor['datasetGeneration'] = dataset_generation
                 bound = subprocess.run([sys.executable, str(checkout / 'hermes'), '-p', name, 'mithril-schedule-custody', '--stdin'],
                     input=json.dumps({'owner': 'alice', 'binding': anchor}), text=True,
                     capture_output=True, timeout=30, cwd=checkout, env=env)
@@ -94,8 +99,22 @@ def test_durable_original_source_binding_survives_process_and_profile_restarts(t
                 assert effect.read_text() == baseline + 'xxx'
                 assert all(c[1] == 'Bearer mf_' + name*32 and c[2]['profile'] == name for c in calls[first:])
                 assert [c[2]['action'] for c in calls[first:]] == ['claim', 'transition', 'transition'] * 3
+                assert all(c[2].get('datasetGeneration', 0) == dataset_generation for c in calls[first:])
             finally:
                 reset_hermes_home_override(ht)
+        # Restore identical authored bytes/metadata into a new owner dataset.
+        # A fresh process must retain the old epoch and refuse the real shell effect.
+        before_effect = effect.read_text()
+        mode['generation'] = dataset_generation + 1
+        refused = subprocess.run([sys.executable, '-c', _ORIGINAL_WORKER],
+            input=json.dumps({'jobId': job['id'], 'instant': None}), text=True,
+            capture_output=True, timeout=30, cwd=checkout, env=env)
+        assert refused.returncode == 0, refused.stderr
+        value = json.loads(refused.stdout.strip().split('\n')[-1])
+        assert not value['processed']
+        assert effect.read_text() == before_effect
+        assert calls[-1][2]['action'] == 'claim'
+        assert calls[-1][2].get('datasetGeneration', 0) == dataset_generation
 
 
 def test_durable_required_binding_refuses_missing_store_authored_edits_and_plugin_unload(tmp_path, monkeypatch):
@@ -291,6 +310,13 @@ def server():
                 return
             value = {'userId': 'alice', 'profile': body['profile']}
             action = body['action']
+            generation = mode.get('generation', 0)
+            if action != 'status' and body.get('datasetGeneration', 0) != generation:
+                self.send_response(409)
+                self.end_headers()
+                return
+            if generation:
+                value['datasetGeneration'] = generation
             if action in ('status', 'select'):
                 value.update(selected=mode['value'] != 'passive', revision=1)
             else:
@@ -460,3 +486,20 @@ def test_guarded_automatic_restore_keeps_original_enabled_source_without_passive
         assert value['processed'] and value['execution']['status'] == 'completed'
         assert effect.read_text() == 'x'
         assert [c[2]['action'] for c in calls[-3:]] == ['claim', 'transition', 'transition']
+
+
+def test_custody_generation_validation_rejects_missing_rebased_and_unsafe_receipts():
+    c = client()
+    command = {'action': 'select', 'profile': 'a', 'expectedRevision': 0, 'datasetGeneration': 1}
+    c.validate_command(command)
+    value = {'userId': 'alice', 'profile': 'a', 'selected': True, 'revision': 1, 'datasetGeneration': 1}
+    assert c.receipt(value, 'alice', command) == value
+    for epoch in [None, 0, 2, -1, True, 1.5, 2**53, '1']:
+        bad = {**value, 'datasetGeneration': epoch}
+        with pytest.raises(ValueError):
+            c.receipt(bad, 'alice', command)
+    with pytest.raises(ValueError):
+        c.receipt({k: v for k, v in value.items() if k != 'datasetGeneration'}, 'alice', command)
+    for epoch in [-1, True, 1.5, 2**53, '1', None]:
+        with pytest.raises(ValueError):
+            c.validate_command({**command, 'datasetGeneration': epoch})
