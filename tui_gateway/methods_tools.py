@@ -229,9 +229,31 @@ def _session_toolsets(session) -> tuple:
         return _load_enabled_toolsets(_resolve_agent_platform(_session_source(session))), _load_disabled_toolsets()
 
 
-def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
+def _toolset_read_rpc(name: str, fail_code: int):
+    """Read under the attached session's full runtime scope; ids confer no authority.
+
+    Sessionless local settings retain launch-profile behavior. An explicit id must
+    refer to the calling transport's live generation, including after resolution.
+    """
+    def deco(body):
+        def handler(rid, params):
+            sid = params.get("session_id")
+            session = None
+            if sid:
+                _, session = _current_session_steer_authority(sid)
+                if session is None:
+                    return _err(rid, 4001, "session is not attached to this transport")
+            with _session_profile_runtime_scope(session or {}):
+                result = body(rid, params, session)
+            if sid and _current_session_steer_authority(sid)[1] is not session:
+                return _err(rid, 4001, "session attachment changed during tool readback")
+            return result
+        return _rpc(name, fail_code)(handler)
+    return deco
+
+
+def _toolset_rows(session, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
-    session = _sessions.get(params.get("session_id", ""))
     enabled = set(_session_toolsets(session)[0] or [])
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
@@ -268,8 +290,6 @@ _SIMPLE_RPCS = {
     "plugins.list": (5032, lambda params: {"plugins": [
         {"name": n, "version": getattr(i, "version", "?"), "enabled": getattr(i, "enabled", True)}
         for n, i in _tools_mod("hermes_cli.plugins").get_plugin_manager()._plugins.items()]}),
-    "tools.list": (5031, lambda params: {"toolsets": _toolset_rows(params, with_tools=True)}),
-    "toolsets.list": (5032, lambda params: {"toolsets": _toolset_rows(params, with_tools=False)}),
     "agents.list": (5033, lambda params: {"processes": [
         {"session_id": p["session_id"], "command": p["command"][:80], "status": p["status"], "uptime": p["uptime_seconds"]}
         for p in _tools_mod("tools.process_registry").process_registry.list_sessions()]}),
@@ -278,6 +298,18 @@ for _name, (_code, _build) in _SIMPLE_RPCS.items():
     # Look the builder up at call time: bind_module rebinds the table's lambdas onto server globals.
     _rpc(_name, _code)(lambda rid, params, _n=_name: _ok(rid, _SIMPLE_RPCS[_n][1](params)))
 del _name, _code, _build
+
+
+@_toolset_read_rpc("tools.list", 5031)
+def _(rid, params: dict, session) -> dict:
+    return _ok(rid, {"toolsets": _toolset_rows(session, with_tools=True)})
+
+
+@_toolset_read_rpc("toolsets.list", 5032)
+def _(rid, params: dict, session) -> dict:
+    return _ok(rid, {"toolsets": _toolset_rows(session, with_tools=False)})
+
+
 _rpc("process.list", 5010, live_session=True)(
     lambda rid, params, session: _ok(rid, {"processes": _session_processes(session)}))
 
@@ -1197,10 +1229,9 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Tools / toolsets / agents ───────────────────────────────────────────────
-@_rpc("tools.show", 5034)
-def _(rid, params: dict) -> dict:
+@_toolset_read_rpc("tools.show", 5034)
+def _(rid, params: dict, session) -> dict:
     mt = _tools_mod("model_tools")
-    session = _sessions.get(params.get("session_id", ""))
     enabled, disabled = _session_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
     tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,

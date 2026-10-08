@@ -535,6 +535,8 @@ export interface SessionLiveInfo {
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
+  distribution?: string
+  action_contract?: string
   version?: string
   release_date?: string
   update_behind?: unknown | null
@@ -3223,6 +3225,8 @@ export interface SessionCwdSetResult {
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
+  distribution?: string
+  action_contract?: string
   version?: string
   release_date?: string
   update_behind?: unknown | null
@@ -3837,7 +3841,7 @@ export interface BrowserManageResult {
   url?: string | null
   messages?: string[] | null
 }
-/** Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an absent / unknown id falls back to the launch profile's config, so it is never required. */
+/** Optional session readback. Explicit ids require live transport membership; an omitted id reads launch-profile settings. Unknown ids are rejected. */
 export interface _SessionScoped {
   session_id?: string | null
 }

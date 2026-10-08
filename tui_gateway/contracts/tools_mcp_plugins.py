@@ -17,8 +17,8 @@ from .registry import method
 
 
 class _SessionScoped(Params):
-    """Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an
-    absent / unknown id falls back to the launch profile's config, so it is never required."""
+    """Optional session readback. Explicit ids require live transport membership;
+    an omitted id reads launch-profile settings. Unknown ids are rejected."""
 
     session_id: str | None = None
 

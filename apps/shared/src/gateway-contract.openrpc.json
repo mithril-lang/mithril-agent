@@ -29813,6 +29813,16 @@
             "default": null,
             "title": "Desktop Contract"
           },
+          "distribution": {
+            "default": "",
+            "title": "Distribution",
+            "type": "string"
+          },
+          "action_contract": {
+            "default": "",
+            "title": "Action Contract",
+            "type": "string"
+          },
           "version": {
             "default": "",
             "title": "Version",
@@ -30667,6 +30677,16 @@
             ],
             "default": null,
             "title": "Desktop Contract"
+          },
+          "distribution": {
+            "default": "",
+            "title": "Distribution",
+            "type": "string"
+          },
+          "action_contract": {
+            "default": "",
+            "title": "Action Contract",
+            "type": "string"
           },
           "version": {
             "default": "",
@@ -38792,7 +38812,7 @@
       },
       "_SessionScoped": {
         "additionalProperties": false,
-        "description": "Handlers that look a live session up with ``_sessions.get(params.get(\"session_id\"))``: an\nabsent / unknown id falls back to the launch profile's config, so it is never required.",
+        "description": "Optional session readback. Explicit ids require live transport membership;\nan omitted id reads launch-profile settings. Unknown ids are rejected.",
         "properties": {
           "session_id": {
             "anyOf": [
