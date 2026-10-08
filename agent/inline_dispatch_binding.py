@@ -7,6 +7,54 @@ from hermes_constants import hermes_home_key
 
 
 _CURRENT = ContextVar("agent_inline_dispatch", default=None)
+_TARGETS = ContextVar("agent_inline_targets", default=None)
+
+# Mutable data revisions stay live; these are execution owners, not data snapshots.
+_TARGET_ATTRIBUTES = {
+    "todo_list": ("_todo_store",),
+    "memory": ("_memory_store", "_memory_notify", "_build_memory_write_metadata"),
+    "session_search": ("_get_session_db_for_recall",),
+    "clarify": ("clarify_callback",),
+    "read_terminal": ("read_terminal_callback",),
+    "desktop_preview": ("read_preview_callback",),
+    "drive_preview": ("drive_preview_callback",),
+    "annotate_preview": ("drive_preview_callback",),
+    "read_window_below": ("read_window_below_callback",),
+    "gui_tour": ("tour_callback",),
+    "manage_connections": ("connection_callback",),
+    "manage_catalog": ("connection_callback",),
+    "setup_mcp": ("connection_callback",),
+    "delegate_task": ("_dispatch_delegate_task",),
+}
+
+
+def _read_target(agent, attribute):
+    if attribute == "_memory_notify":
+        manager = getattr(agent, "_memory_manager", None)
+        return manager.notify_memory_tool_write if manager else None
+    return getattr(agent, attribute, None)
+
+
+def inline_target(agent, attribute):
+    selected = _TARGETS.get()
+    if selected is not None and selected[0] is agent and attribute in selected[1]:
+        return selected[1][attribute]
+    return _read_target(agent, attribute)
+
+
+def select_inline_targets(agent, name, executor):
+    targets = {attr: _read_target(agent, attr) for attr in _TARGET_ATTRIBUTES.get(name, ())}
+    identities = tuple((attr, callable_identity(value) if callable(value) else id(value))
+                       for attr, value in targets.items())
+
+    def execute(agent, args, ctx):
+        token = _TARGETS.set((agent, targets))
+        try:
+            return executor(agent, args, ctx)
+        finally:
+            _TARGETS.reset(token)
+
+    return execute, ("inline", callable_identity(executor), identities)
 
 
 def callable_identity(handler):

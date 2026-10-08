@@ -331,11 +331,19 @@ as `returned-error`. Neither case calls the replacement. Changes after selection
 cannot redirect the captured callable. Children receive the agent's live
 `_session_messages` list without appending child transcript rows.
 
-This pins canonical context/memory-provider execution targets and inline table
-entries, not the mutable stores/callbacks behind every inline table executor,
-plugin-internal state, custom manager internals or a deployed executor revision.
-Those require their own operation admission and qualification evidence. The
-production code sandbox allowlist is unchanged.
+Inline table selection also retains the actual todo/memory store, memory-write
+notification and metadata builder, recall getter, GUI/connection callbacks and
+delegation callback. `inline_target` reads those retained references during the
+selected invocation; an agent attribute replacement cannot redirect it after
+the last resolver check. Parent snapshots include those identities, so a
+replacement during policy or before invocation is rejected through the same
+attempt states described above. Data inside the selected store remains live:
+ordinary todo writes still advance its revision and do not retire its owner.
+
+This pins execution references, not plugin/store internals, the recall getter's
+eventual database, GUI target/grant revisions, custom manager internals or a
+deployed executor revision. Those require their own operation admission and
+qualification evidence. The production code sandbox allowlist is unchanged.
 
 During normal agent `execute_code` dispatch, `agent/code_child_dispatch.py` binds
 the existing local socket and remote file-RPC child consumers to the owning
