@@ -121,6 +121,32 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 Old toolset names with `_tools` suffixes (e.g., `web_tools`, `terminal_tools`) are mapped to their modern tool names via `_LEGACY_TOOLSET_MAP` for backward compatibility.
 
+### Remote Python child-call delivery
+
+`tools/code_execution_rpc.py::_rpc_poll_loop` serves both the persistent remote
+Python kernel and the per-call remote script transport. After authentication and
+sequence validation, it atomically creates an owner-only `dispatch_<sequence>`
+directory and moves the request into it **before** invoking the existing tool
+dispatcher. A failed claim does not dispatch. Markers remain for the RPC directory's
+lifetime; reusing a claimed sequence cannot grant another execution.
+
+Result shipping checks the actual remote command exit status. If shipping fails,
+the original request is no longer in the polling queue and cannot be automatically
+executed again. The missing response remains an unknown outcome for the caller;
+the marker is not a completion receipt or proof of cancellation. This protects
+read, write and provider calls from transport-induced replay without changing the
+existing tool allowlist, approval callbacks, profile scope or per-cell call budget.
+RPC-directory cleanup belongs to the existing kernel/script lifecycle.
+
+The real-shell regression in `tests/tools/test_code_execution_file_rpc.py` invokes
+the actual registry file reader and fails result transport, then observes later
+polls. The unchanged base executes the same request twice; the fixed path executes
+once, retains its private claim and produces no false response. The generated-stub
+test also covers call correlation, authentication, allowed operations and budgets.
+This is local transport evidence, not a live remote-provider or installed-client
+qualification. Full Web/Desktop tool-only dispatch, durable cross-runtime attempt
+receipts, live revision admission and cancellation verification remain separate.
+
 ## Dispatch
 
 At runtime, tools are dispatched through the central registry, with agent-loop exceptions for some agent-level tools such as memory/todo/session-search handling.

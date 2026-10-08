@@ -231,12 +231,23 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                     env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
                 seq = request.get("seq", 0)
-                if not isinstance(seq, int):
+                if type(seq) is not int or seq < 0 or seq > 2**53 - 1:
                     # A non-int seq cannot form the res_NNNNNN name the caller
                     # polls; formatting it after dispatch would raise, leave the
                     # request in place, and replay the tool call every cycle.
                     logger.debug("RPC request with malformed seq in %s", req_file)
                     env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    continue
+                # Claim BEFORE dispatch. A result upload/removal failure must
+                # never leave a request eligible for another write/provider call.
+                # mkdir is atomic across pollers; retain the marker for this RPC
+                # directory's lifetime, including after an uncertain outcome.
+                claim = shlex.quote(f"{rpc_dir}/dispatch_{seq:06d}")
+                claimed = env.execute(
+                    f"umask 077 && mkdir {claim} && mv {quoted_req_file} {claim}/request",
+                    cwd="/", timeout=10,
+                )
+                if claimed.get("returncode", 1) != 0 or stop_event.is_set():
                     continue
                 tool_result = _handle_rpc_request(
                     request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
@@ -246,8 +257,7 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                 # Atomic (tmp + rename) and owner-only; results carry tool output
                 # on a shared-host backend.
                 _remote_write(env, f"{rpc_dir}/res_{seq:06d}", tool_result,
-                              atomic=True, timeout=60)
-                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                              atomic=True, timeout=60, check=True)
         except Exception as e:
             if not stop_event.is_set():
                 logger.debug("RPC poll error: %s", e, exc_info=True)
