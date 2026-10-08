@@ -1,0 +1,12 @@
+name: mithril-schedules
+version: 0.3.0
+description: Original Mithril schedule execution custody policy and client
+entrypoint: __init__.py
+author: Mithril
+requires_env:
+  - MITHRIL_API_KEY
+config_schema:
+  api_origin:
+    type: str
+    required: false
+    description: Fixed Mithril API origin; loopback HTTP is accepted for local qualification only.

@@ -253,8 +253,14 @@ def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
                     return False
                 time.sleep(0.1)
     if msvcrt is not None:
-        getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
-        return True
+        try:
+            mode = getattr(msvcrt, "LK_NBLCK" if timeout <= 0 else "LK_LOCK")
+            getattr(msvcrt, "locking")(lock_fd.fileno(), mode, 1)
+            return True
+        except (OSError, IOError):
+            if timeout <= 0:
+                return False
+            raise
     return None
 
 
@@ -272,15 +278,21 @@ def _release_flock(lock_fd) -> None:
 
 
 @contextlib.contextmanager
-def _jobs_lock():
+def _jobs_lock(*, require_cross_process: bool = False):
     """Serialize a load_jobs→modify→save_jobs critical section: in-process RLock (parallel tick
     threads) plus a cross-process flock on ``<cron dir>/.jobs.lock`` (gateway vs. CLI writes —
     otherwise a `cron pause` could be clobbered and keep firing). Nested calls in one thread
     reuse the held lock. Without a flock backend, or on flock timeout (logged loudly), it
     degrades to in-process-only locking: a briefly torn cross-process write beats a dead
-    scheduler."""
+    scheduler. Synchronization passes ``require_cross_process=True`` to refuse that
+    degraded path and to require the lock for the current profile's store."""
     depth = getattr(_jobs_lock_state, "depth", 0)
     if depth:
+        if require_cross_process and (
+            not getattr(_jobs_lock_state, "cross_process", False)
+            or getattr(_jobs_lock_state, "store", None) != _current_cron_store()
+        ):
+            raise RuntimeError("Original schedule synchronization requires the jobs file lock")
         _jobs_lock_state.depth = depth + 1
         try:
             yield
@@ -295,13 +307,17 @@ def _jobs_lock():
         # stamps from unlocked loads or prior sections can never suppress a needed merge.
         # See #80703.
         _jobs_lock_state.load_stamp = None
+        _jobs_lock_state.cross_process = False
+        _jobs_lock_state.store = _current_cron_store()
         lock_fd = None
         try:
             try:
                 ensure_dirs()
                 lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8-sig")
                 lock_fd.seek(0)
-                if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is False:
+                acquired = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS)
+                _jobs_lock_state.cross_process = acquired is True
+                if acquired is False:
                     logger.error(
                         "Timed out after %.0fs waiting for the cron "
                         "jobs lock (%s) — another process is holding "
@@ -316,6 +332,8 @@ def _jobs_lock():
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
                                "proceeding with in-process lock only", e)
             try:
+                if require_cross_process and not _jobs_lock_state.cross_process:
+                    raise RuntimeError("Original schedule synchronization requires the jobs file lock")
                 yield
             finally:
                 if lock_fd is not None:
@@ -323,10 +341,12 @@ def _jobs_lock():
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
+            _jobs_lock_state.cross_process = False
+            _jobs_lock_state.store = None
 
 
 @contextlib.contextmanager
-def _fire_job_lock(job_id: str):
+def _fire_job_lock(job_id: str, *, wait: bool = True):
     """Serialize one job's owner mutations and external side effects. Unlike the global jobs lock
     this may be held across network delivery; scoped to one profile + job so unrelated jobs keep
     progressing. Fails closed when cross-process locking is unavailable."""
@@ -335,7 +355,9 @@ def _fire_job_lock(job_id: str):
     with _fire_fence_locks_guard:
         local_lock = _fire_fence_locks.setdefault(lock_key, threading.RLock())
 
-    if not local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS):
+    acquired_local = (local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS)
+                      if wait else local_lock.acquire(blocking=False))
+    if not acquired_local:
         logger.error("Timed out waiting for local fire fence %s; failing closed", lock_key)
         yield False
         return
@@ -356,7 +378,7 @@ def _fire_job_lock(job_id: str):
         try:
             lock_fd = open(lock_path, "a+", encoding="utf-8")
             lock_fd.seek(0)
-            result = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS)
+            result = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS if wait else 0)
             if result is None:  # pragma: no cover - supported platforms provide one backend
                 logger.error("No cross-process lock backend for cron fire fence")
             elif not result:
@@ -1535,11 +1557,24 @@ def _unlink_quiet(path: Optional[str]) -> None:
 
 def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
     """Serialize the store payload to a fsynced temp file next to *jobs_file*; return its path."""
+    # A normal pause/tick/edit must not discard metadata restored by Desktop
+    # synchronization (or a newer writer). Jobs and the write timestamp remain
+    # authoritative here; retain every other existing object-store field.
+    payload: Dict[str, Any] = {}
+    try:
+        original = json.loads(jobs_file.read_text(encoding="utf-8-sig"))
+        if isinstance(original, dict):
+            payload.update(original)
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        # Initial saves and explicit corrupt-store repair still work. The
+        # existing merge guard refuses corruption before staging normal saves.
+        pass
+    payload.update(jobs=jobs, updated_at=_hermes_now().isoformat())
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
-                {"jobs": jobs, "updated_at": _hermes_now().isoformat()},
+                payload,
                 f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
@@ -1824,7 +1859,67 @@ def create_job(
     pinned: bool = False,
     interpreter: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a new cron job and return the stored record.
+    """Prepare through the original parser, then persist exactly one original record."""
+    job = prepare_job(
+        prompt=prompt,
+        schedule=schedule,
+        name=name,
+        repeat=repeat,
+        deliver=deliver,
+        origin=origin,
+        skill=skill,
+        skills=skills,
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        script=script,
+        context_from=context_from,
+        enabled_toolsets=enabled_toolsets,
+        workdir=workdir,
+        no_agent=no_agent,
+        attach_to_session=attach_to_session,
+        monitor_script=monitor_script,
+        monitor_url=monitor_url,
+        reasoning_effort=reasoning_effort,
+        failure_deliver=failure_deliver,
+        paused=paused,
+        paused_reason=paused_reason,
+        pinned=pinned,
+        interpreter=interpreter,
+    )
+    with _jobs_lock():
+        save_jobs(load_jobs() + [job])
+    return job
+
+
+def prepare_job(
+    prompt: Optional[str],
+    schedule: str,
+    name: Optional[str] = None,
+    repeat: Optional[int] = None,
+    deliver: Optional[str] = None,
+    origin: Optional[Dict[str, Any]] = None,
+    skill: Optional[str] = None,
+    skills: Optional[List[str]] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    script: Optional[str] = None,
+    context_from: Optional[Union[str, List[str]]] = None,
+    enabled_toolsets: Optional[List[str]] = None,
+    workdir: Optional[str] = None,
+    no_agent: bool = False,
+    attach_to_session: Optional[bool] = None,
+    monitor_script: Optional[str] = None,
+    monitor_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    failure_deliver: Optional[str] = None,
+    paused: bool = False,
+    paused_reason: Optional[str] = None,
+    pinned: bool = False,
+    interpreter: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Prepare a complete original record without writing the store or registering execution.
 
     deliver defaults to "origin" when ``origin`` is given, else "local"; repeat None = forever.
     script: stdout is injected as prompt context, or with ``no_agent=True`` IS the job (stdout
@@ -1923,8 +2018,6 @@ def create_job(
         if value is not None:
             job[key] = value
 
-    with _jobs_lock():
-        save_jobs(load_jobs() + [job])
     return job
 
 
@@ -2093,6 +2186,46 @@ def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
+def prepare_job_update(job: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply original update rules to an in-memory record without saving the store.
+
+    Like the original update path, normalizers may mutate their inputs. Read-only
+    consumers must pass captured copies; no store, lock or execution is touched.
+    """
+    bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
+    if bad_fields:
+        raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
+    job_id = job["id"]
+    _rederive_repeat_for_schedule_change(job, updates)
+    _normalize_job_updates(job, updates)
+    _apply_pin_update(job, updates)
+    updated = _apply_skill_fields({**job, **updates})
+    _reject_terminal_activation(job, updated, job_id)
+    # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
+    if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
+        _validate_job_mode_invariants(
+            updated.get("monitor_script") or None,
+            updated.get("monitor_url") or None,
+            bool(updated.get("no_agent")),
+            _normalize_job_optional_text(updated.get("script")))
+    if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
+        raise ValueError(EMPTY_PAYLOAD_ERROR)
+    if "schedule" in updates:
+        _apply_schedule_update(updated, updates, job_id)
+        # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
+        # the record from the stale-error re-arm while no longer describing where it is
+        # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
+        from cron.quota_hold import clear_state as _clear_quota_hold
+        _clear_quota_hold(updated)
+    if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
+        # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
+        # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
+        updated.pop("pending_slot", None)
+    _fill_missing_next_run(updated)
+    _reject_terminal_activation(job, updated, job_id)
+    return updated
+
+
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
@@ -2101,33 +2234,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
-        _rederive_repeat_for_schedule_change(job, updates)
-        _normalize_job_updates(job, updates)
-        _apply_pin_update(job, updates)
-        updated = _apply_skill_fields({**job, **updates})
-        _reject_terminal_activation(job, updated, job_id)
-        # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
-        if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
-            _validate_job_mode_invariants(
-                updated.get("monitor_script") or None,
-                updated.get("monitor_url") or None,
-                bool(updated.get("no_agent")),
-                _normalize_job_optional_text(updated.get("script")))
-        if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
-            raise ValueError(EMPTY_PAYLOAD_ERROR)
-        if "schedule" in updates:
-            _apply_schedule_update(updated, updates, job_id)
-            # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
-            # the record from the stale-error re-arm while no longer describing where it is
-            # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
-            from cron.quota_hold import clear_state as _clear_quota_hold
-            _clear_quota_hold(updated)
-        if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
-            # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
-            # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
-            updated.pop("pending_slot", None)
-        _fill_missing_next_run(updated)
-        _reject_terminal_activation(job, updated, job_id)
+        updated = prepare_job_update(job, updates)
         jobs[i] = updated
         save_jobs(jobs)
         return _normalize_job_record(updated)
@@ -2135,31 +2242,38 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return _with_job(job_id, apply)
 
 
+def _pause_job_updates(reason: Optional[str] = None) -> Dict[str, Any]:
+    return {"enabled": False, "state": "paused",
+            "paused_at": _hermes_now().isoformat(), "paused_reason": reason}
+
+
+def prepare_job_transition(job: Dict[str, Any], action: str) -> Dict[str, Any]:
+    """Prepare original pause/resume rules on captured copies, without native writes."""
+    captured = copy.deepcopy(job)
+    if action not in {"pause", "resume"}:
+        raise ValueError("operation")
+    if (not isinstance(captured, dict) or not isinstance(captured.get("id"), str)
+            or not re.fullmatch(r"[a-zA-Z0-9_-]{1,256}", captured["id"])
+            or not isinstance(captured.get("schedule"), dict)):
+        raise ValueError("inventory")
+    if is_terminal_job(captured):
+        raise ValueError("terminal")
+    if any(captured.get(field) is not None for field in ("pending_slot", "run_claim", "fire_claim")):
+        raise ValueError("busy")
+    updates = _pause_job_updates() if action == "pause" else _resume_job_updates(captured)
+    return prepare_job_update(captured, updates)
+
+
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Pause a job without deleting it. Accepts a job ID or name."""
     job = resolve_job_ref(job_id)
     if not job:
         return None
-    return update_job(job["id"], {
-        "enabled": False,
-        "state": "paused",
-        "paused_at": _hermes_now().isoformat(),
-        "paused_reason": reason,
-    })
+    return update_job(job["id"], _pause_job_updates(reason))
 
 
-def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job. Accepts a job ID or name.
-
-    A recurring job paused across one of its slots must not lose that slot silently: the stored
-    ``next_run_at`` (already past) survives resume as the due instant, and the ordinary late /
-    catch-up / ``cron.catch_up_missed`` policy in the due scan decides what happens to it — one
-    fire or a logged skip, never a silent re-anchor past it (#113603). One-shots and future
-    instants recompute from now as before.
-    """
-    job = resolve_job_ref(job_id)
-    if not job:
-        return None
+def _resume_job_updates(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Shared original resume policy; elapsed recurring occurrences stay due."""
     stored_next = job.get("next_run_at")
     stored_dt = _parse_aware(stored_next) if stored_next else None
     if (
@@ -2179,13 +2293,28 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         raise ValueError(
             f"Cannot resume: one-shot time {run_at} is in the past "
             f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire.")
-    return update_job(job["id"], {
+    return {
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
         "paused_reason": None,
         "next_run_at": next_run_at,
-    })
+    }
+
+
+def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Resume a paused job. Accepts a job ID or name.
+
+    A recurring job paused across one of its slots must not lose that slot silently: the stored
+    ``next_run_at`` (already past) survives resume as the due instant, and the ordinary late /
+    catch-up / ``cron.catch_up_missed`` policy in the due scan decides what happens to it — one
+    fire or a logged skip, never a silent re-anchor past it (#113603). One-shots and future
+    instants recompute from now as before.
+    """
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
+    return update_job(job["id"], _resume_job_updates(job))
 
 
 def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -2721,7 +2850,7 @@ def _machine_id() -> str:
 
 def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
-    manual: bool = False, return_job: bool = False,
+    manual: bool = False, return_job: bool = False, expected_version: Optional[str] = None,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
@@ -2785,7 +2914,20 @@ def claim_job_for_fire(
         save_jobs(jobs)
         return dict(copy.deepcopy(job), _scheduled_instant=instant) if return_job else True
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    def claim():
+        # Keep the existing lock order: fire fence, then store lock. Remote manual
+        # requests must match the exact source before load/claim can mutate it.
+        with _jobs_lock(require_cross_process=expected_version is not None):
+            if expected_version is not None:
+                from cron.source_restore import OriginalSourceVersionMismatch, _digest, _read
+                if (not isinstance(expected_version, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", expected_version)):
+                    raise ValueError("operation")
+                if _digest(_read(_current_cron_store().jobs_file)) != expected_version:
+                    raise OriginalSourceVersionMismatch("conflict")
+            return _with_job(job_id, apply, False)
+
+    return _under_fire_fence(job_id, claim)
 
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:

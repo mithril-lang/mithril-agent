@@ -434,3 +434,72 @@ agent or transfer execution authority. Board-root resolution is unchanged.
 Desktop adoption/replacement must use this same lock; older installed writers
 and installer pins require separate migration and live qualification. This source
 change alone does not qualify installed cloud metadata replacement.
+
+## Original source preparation and restoration
+
+`cron source-prepare` accepts a bounded UTF-8 stdin request bound to owner,
+profile, operation ID and the configured IANA timezone. It calls the same
+`prepare_job` builder used by original `create_job`, retaining the original
+schedule grammar and metadata without writing jobs, claiming occurrences or
+granting execution authority. Duplicate fields and unexpected input authority
+are refused. A successful preparation is data, not a scheduled execution.
+The preparation also includes `sourceText`, the original builder's complete JSON
+source. Consumers must retain that text when inserting into an original full-file
+inventory instead of serializing a JavaScript projection with potentially rounded
+opaque integers. The read-only command still writes no native files or receipts.
+
+`cron source-restore` uses the original jobs lock, occurrence fences and source
+CAS. Its atomic text writer opts out of host newline conversion so the receipt
+version describes the actual UTF-8 bytes on Windows as well as POSIX. Windows
+final source checks compare descriptor change times with another descriptor,
+while checking that it still names the same path identity, size and modification
+time. This preserves late-edit rejection despite Windows path and descriptor
+ctime differences. These source ports still require installer pins, cloud
+resource binding and execution ownership before complete synchronization.
+
+Windows process-containment qualification checks the actual primary thread's
+kernel suspend count before job assignment, using its identity returned by the
+real CreateProcess call. The temporary inspection increment is restored without
+resuming execution. Whole-process status is not a substitute for this boundary:
+loader threads may have different states. Assignment/resume cancellation still
+must leave no executed child, live process or leaked process/job handle.
+
+### Readonly original lifecycle preparation
+
+`hermes cron source-transition` accepts a request bound to owner, active profile, configured timezone, operation ID and complete source. It prepares pause/resume with the same lifecycle builders as original store updates, preserving elapsed recurring occurrences and counters, and refuses terminal or claimed work. It never writes jobs, changes execution authority or activates a scheduler. Actual CLI A→B→A tests verify profile isolation and original bytes; original lifecycle comparison tests verify stored and prepared semantics.
+
+The native `cron source-restore` bridge accepts exactly one of `file` (the existing parsed-object mode) or `sourceText` (exact UTF-8 source). The text mode parses and validates the entire inventory without reserializing it, retaining BOM, CRLF, original field ordering and opaque integer metadata. It uses the same fire fences, original jobs lock, whole-file byte CAS, private durable receipts, runtime-claim checks and new-record ownership gate. A completed receipt may replay after newer local edits without writing those edits back. This does not authorize native resources, cloud uploads or execution; the consumer must supply those bindings separately.
+
+### Retained manual execution requests
+
+`hermes cron source-run` accepts bounded stdin with `owner`, active `profile`,
+`operationId`, `jobId` and the SHA256 `expectedVersion` of the entire native
+jobs file. Before any claim or effects it commits a private `unknown` marker in
+the existing profile-local executions database. Replays return the retained
+receipt; reusing an ID for different input refuses. The original fire fence and
+required cross-process jobs lock check the exact source version before loading
+or claiming it. A mismatched source or refused claim retains `rejected`;
+confirmed original runner success retains `completed`. Unconfirmed results,
+interrupted callers and ambiguous failures remain `unknown` and never rerun
+automatically. This does not guarantee completion after interruption.
+
+Execution uses the existing claim and runner, including its execution-policy
+plugin, resource/config resolution, output files and ledger. Manual runs do not
+stamp the pending scheduled occurrence as completed. The JSON receipt contains
+only correlated identifiers, source version and status; native output and errors
+are not copied into the remote response. Real isolated CLI tests cover A→B→A,
+source refusal, concurrent replay and killing the caller after an actual harmless
+script effect. This local port still needs the selected-device request broker,
+Native adapter, cloud authority verification and installer provisioning before
+it establishes Web execution or production readiness.
+
+`hermes cron source-run-status` inspects the same exact bounded request through a
+read-only SQLite connection. A missing ledger/table/request returns `absent`
+without creating a marker or execution. Matching rows return the retained
+`unknown`, `rejected` or `completed` status even after the jobs file changes.
+Reused input refuses. Inspection never calls the original claim or runner;
+`absent` is evidence of no retained local result, not permission to dispatch.
+Real CLI tests check absent and completed inspection across A/B/A homes, reject
+altered request identity, and inspect an active then interrupted script without
+another effect. Native recovery integration and production publication remain
+separate requirements.

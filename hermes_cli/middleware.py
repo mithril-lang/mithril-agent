@@ -20,9 +20,11 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+CRON_EXECUTION_MIDDLEWARE = "cron_execution"
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    CRON_EXECUTION_MIDDLEWARE,
 }
 
 
@@ -149,6 +151,20 @@ def run_tool_execution_middleware(
         tool_name=tool_name, args=args, original_args=context.pop("original_args", args), **context)
 
 
+def run_cron_execution_middleware(job: Dict[str, Any], next_call: Callable, **context: Any) -> Any:
+    """Required execution policy for a bound original occurrence; errors never fall through.
+
+    Consumers without an execution binding keep the original scheduler path. A bound
+    occurrence cannot silently run when its policy plugin is missing or unloaded.
+    """
+    binding = job.get("_execution_binding")
+    policy = binding.get("policy") if isinstance(binding, dict) else None
+    if not isinstance(policy, str) or not policy:
+        raise RuntimeError("Required execution policy unavailable")
+    return _run_execution_chain(CRON_EXECUTION_MIDDLEWARE, next_call,
+                                strict=True, required=True, policy=policy, args=job, **context)
+
+
 class _DownstreamExecutionError(Exception):
     """Marks an exception raised BELOW a middleware frame so the frame's own failure handling
     (skip-and-continue) doesn't swallow it."""
@@ -158,13 +174,19 @@ class _DownstreamExecutionError(Exception):
         self.original = original
 
 
-def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwargs: Any) -> Any:
+def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], *,
+                         strict: bool = False, required: bool = False,
+                         policy: str | None = None, **kwargs: Any) -> Any:
     from hermes_cli.plugins import _delivery_manager
 
     payload_key = "request" if "request" in kwargs else "args"
     manager = _delivery_manager()
     callbacks = list(manager._middleware.get(kind, []))
+    if policy is not None:
+        callbacks = [cb for cb in callbacks if getattr(cb, "_execution_policy_name", None) == policy]
     if not callbacks:
+        if required:
+            raise RuntimeError("Required execution policy unavailable")
         return terminal_call(kwargs[payload_key])
 
     def call_at(index: int, payload: Any) -> Any:
@@ -205,6 +227,8 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
             # Runs once per tool/LLM call: a mis-declared callback fails identically every time,
             # so it goes through the manager's warn-once reporter (#111922).
             manager._report_hook_failure(kind, callback, call_kwargs, exc, surface="Middleware")
+            if strict:
+                raise
             if next_succeeded:
                 return next_result
             if next_called:

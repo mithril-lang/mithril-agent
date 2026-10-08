@@ -56,7 +56,7 @@ def _wait(predicate, timeout=10):
 
 def _read(path):
     assert _wait(path.exists), f"missing child receipt: {path}"
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding='utf-8-sig'))
 
 
 def _alive(identity):
@@ -85,7 +85,7 @@ def _kill(identity):
 @pytest.mark.parametrize('nested', [False, True])
 def test_owner_exit_kills_router_tree_not_external(tmp_path, stop_mode, nested):
     script = tmp_path / 'disposable server.py'
-    script.write_text(_SCRIPT)
+    script.write_text(_SCRIPT, encoding='utf-8')
     env = dict(os.environ, HERMES_HOME=str(tmp_path / 'home'),
                PYTHONPATH=str(Path(__file__).resolve().parents[2]))
     launchers = []
@@ -108,12 +108,12 @@ def test_owner_exit_kills_router_tree_not_external(tmp_path, stop_mode, nested):
             assert all(_alive(i) for i in (owner, router, grandchild, control))
             print('disposable identities:', stop_mode, owner, router, grandchild, control)
             if stop_mode == 'graceful':
-                (tmp_path / 'stop').write_text('stop')
+                (tmp_path / 'stop').write_text('stop', encoding='utf-8')
                 assert _wait((tmp_path / 'closed').exists), 'close killed the owner itself'
                 assert _alive(owner)
                 assert _wait(lambda: not _alive(router) and not _alive(grandchild))
                 assert _alive(control)
-                (tmp_path / 'exit').write_text('exit')
+                (tmp_path / 'exit').write_text('exit', encoding='utf-8')
             else:
                 _kill(owner)  # The venv launcher is not necessarily the owner.
             assert _wait(lambda: not _alive(owner))
@@ -131,7 +131,7 @@ def test_owner_exit_kills_router_tree_not_external(tmp_path, stop_mode, nested):
                 except psutil.NoSuchProcess:
                     pass
             for path in tmp_path.glob('*.json'):
-                _kill(json.loads(path.read_text()))
+                _kill(json.loads(path.read_text(encoding='utf-8-sig')))
             for proc in reversed(descendants):
                 _kill({'pid': proc.pid, 'created': proc.create_time()})
             for launcher in launchers:
@@ -143,6 +143,7 @@ def test_owner_exit_kills_router_tree_not_external(tmp_path, stop_mode, nested):
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize('failure', ['assign', 'resume', 'popen', 'configure'])
 def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatch, failure):
+    import _winapi
     import ctypes
     from ctypes import wintypes
     from hermes_cli.local_runtime import processes
@@ -151,6 +152,15 @@ def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatc
     jobs, children, handles = [], [], []
     real_init = processes._WindowsJob.__init__
     real_assign = processes._WindowsJob.assign
+    real_create = _winapi.CreateProcess
+    primary_threads = {}
+
+    def capture_create(*args, **kwargs):
+        result = real_create(*args, **kwargs)
+        primary_threads[result[2]] = result[3]
+        return result
+
+    monkeypatch.setattr(_winapi, 'CreateProcess', capture_create)
 
     def track_job(job):
         jobs.append(job)
@@ -174,7 +184,29 @@ def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatc
 
     def assign(job, proc):
         children.append(proc)
-        assert psutil.Process(proc.pid).status() == psutil.STATUS_STOPPED
+        # CREATE_SUSPENDED applies to the primary thread, not every Windows
+        # loader thread. Process-wide psutil status is not this guarantee.
+        api = job._api
+        for method, args, result in (
+            ('OpenThread', [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+            ('GetProcessIdOfThread', [wintypes.HANDLE], wintypes.DWORD),
+            ('SuspendThread', [wintypes.HANDLE], wintypes.DWORD),
+            ('ResumeThread', [wintypes.HANDLE], wintypes.DWORD),
+        ):
+            fn = getattr(api, method)
+            fn.argtypes, fn.restype = args, result
+        thread = api.OpenThread(0x0002 | 0x0800, False, primary_threads[proc.pid])
+        assert thread, ctypes.WinError(ctypes.get_last_error())
+        try:
+            assert api.GetProcessIdOfThread(thread) == proc.pid
+            count = api.SuspendThread(thread)
+            assert count != 0xFFFFFFFF, ctypes.WinError(ctypes.get_last_error())
+            # Restore precisely the temporary inspection increment; do not
+            # release the original suspension before job assignment.
+            assert api.ResumeThread(thread) == count + 1
+            assert count >= 1, 'primary thread ran before job assignment'
+        finally:
+            assert api.CloseHandle(thread)
         assert not marker.exists()
         # Query the actual kernel object, not implementation source/constants.
         limits = processes._ExtendedLimits()

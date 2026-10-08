@@ -978,6 +978,14 @@ class PluginContext:
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
+        if kind == "cron_execution":
+            from functools import wraps
+            original = callback
+            @wraps(original)
+            def policy(**kwargs):
+                return original(**kwargs)
+            policy._execution_policy_name = self.manifest.name
+            callback = policy
         return self._track_callback(
             "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
         )
