@@ -598,3 +598,104 @@ def test_mounted_web_desktop_cards_real_approval_queue(owned_sessions, monkeypat
         thread.join(timeout=10)
         listener.close()
         assert not thread.is_alive() and all(not worker.is_alive() for worker in workers)
+
+
+@pytest.mark.platforms("posix")
+def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, request, tmp_path):
+    """Real WASM parents, consent UI, Hono/D1, ticket WS and actual owned handlers.
+
+    Only the fixture issuer/profile mapping, four-tool provider construction and
+    model completion/loopback upgrade are substituted. No stopped compute starts.
+    """
+    import asyncio
+    import os
+    import shutil
+    import secrets
+    import socket
+    import subprocess
+    import time
+    from fastapi import FastAPI, Header, HTTPException
+    import uvicorn
+    import hermes_cli.web_server as web
+    from hermes_cli.web_routers import chat_ws
+    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    import tui_gateway.server as server
+    from agent.memory_provider import spawn_context_thread
+
+    fund = request.config.getoption("--owned-browser-fund-root")
+    node = shutil.which("node")
+    if not fund or not node:
+        pytest.skip("real Browser/API qualifier requires explicit Fund checkout and Node")
+    fund = Path(fund).resolve()
+    home = Path(owned_sessions["a"]["profile_home"])
+    (home / "ws-owned.txt").write_text("ws-owned")
+    monkeypatch.setattr(web.app.state, "auth_required", True, raising=False)
+    monkeypatch.setattr(chat_ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    # This dedicated fixture endpoint represents A's already-selected launch profile.
+    monkeypatch.setattr(server, "_profile_home", lambda profile: home if profile in (None, "a") else None)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    for name in ["_ensure_skin_watcher", "_ensure_lease_watcher",
+                 "_start_backend_heartbeat_refresher", "_schedule_startup_orphan_sweep"]:
+        monkeypatch.setattr(server, name, lambda: None)
+    app = FastAPI()
+    app.include_router(chat_ws.router)
+    issuer = secrets.token_urlsafe(32)
+
+    @app.post("/qualification/ticket")
+    async def fixture_ticket(x_fixture_issuer: str = Header(default="")):
+        if not secrets.compare_digest(x_fixture_issuer, issuer):
+            raise HTTPException(status_code=401)
+        return {"ticket": mint_ticket(user_id="fixture-owner", provider="stub")}
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    service = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
+    thread = spawn_context_thread(
+        target=lambda: asyncio.run(service.serve(sockets=[listener])), name="browser-owned-qualifier")
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not service.started and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert service.started
+        config = {"url": f"ws://127.0.0.1:{port}/api/ws",
+                  "ticketUrl": f"http://127.0.0.1:{port}/qualification/ticket", "issuer": issuer,
+                  "input": str(home / "ws-owned.txt"), "output": str(home / "ws-browser-output"),
+                  "browserExecutable": request.config.getoption("--owned-browser-executable")}
+        config_path = tmp_path / "browser-fixture.json"
+        config_path.write_text(json.dumps(config))
+        config_path.chmod(0o600)
+        process = subprocess.Popen(
+            [node, str(fund / "node_modules/vitest/vitest.mjs"), "run", "test/browser-owned-network.test.ts"],
+            cwd=fund / "apps/api", env={**os.environ, "MITHRIL_OWNED_BROWSER_FIXTURE": str(config_path)},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = process.communicate(timeout=210)
+            assert process.returncode == 0, stdout + "\n" + stderr
+            for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny"]:
+                assert f"local owned browser qualified: {mode}" in stdout, stdout
+            assert (home / "ws-browser-output-js-write").read_text() == "js-write"
+            assert (home / "ws-browser-output-python-write").read_text() == "python-write"
+            assert not (home / "ws-browser-output-js-deny").exists()
+            assert not (home / "ws-browser-output-python-deny").exists()
+            attempts = owned_sessions["a"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"]
+            assert sorted((row["tool_name"], row["state"]) for row in attempts) == [
+                ("read_file", "returned"), ("read_file", "returned"),
+                ("write_file", "returned"), ("write_file", "returned")]
+            assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
+            print(json.dumps({"qualified": "real-browser-api-hermes", "scenarios": 6,
+                              "actual_attempts": 4, "replay_redispatches": 0, "foreign_profile_attempts": 0}))
+            for owner in ["a", "b"]:
+                assert owned_sessions[owner]["agent"]._session_messages == [
+                    {"role": "user", "content": "owned conversation"}]
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            config_path.unlink(missing_ok=True)
+    finally:
+        service.should_exit = True
+        thread.join(timeout=10)
+        listener.close()
+        assert not thread.is_alive()

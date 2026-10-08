@@ -17,3 +17,8 @@ def pytest_addoption(parser):
                      help="Web production DashboardGatewayClient source for local mounted qualification")
     parser.addoption("--approval-ui-desktop-client", default=None,
                      help="Desktop production DashboardGatewayClient source for local mounted qualification")
+
+    parser.addoption("--owned-browser-fund-root", default=None,
+                     help="Fund checkout with built Kuro assets and dependencies for opt-in real Browser/API/Hermes qualification")
+    parser.addoption("--owned-browser-executable", default=None,
+                     help="Optional installed Chromium executable for the real Browser qualification")
