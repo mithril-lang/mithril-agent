@@ -25,7 +25,7 @@ class WireStream:
 
 
 @pytest.fixture
-def owned_sessions(tmp_path, monkeypatch):
+def owned_sessions(tmp_path, monkeypatch, request):
     import tools.file_tools  # noqa: F401
     import tools.todo_tool  # noqa: F401
     import tools.code_execution_tool  # noqa: F401
@@ -40,12 +40,28 @@ def owned_sessions(tmp_path, monkeypatch):
     sessions = {}
     names = ["read_file", "write_file", "todo_list", "execute_code"]
     definitions = [{"type": "function", "function": copy.deepcopy(registry.get_entry(name).schema)} for name in names]
+    collision_fixture = request.node.name == "test_real_browser_api_owned_hermes_network"
+    if collision_fixture:
+        monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
+        monkeypatch.setattr(registry, "_generation", registry._generation)
     for name in ["a", "b"]:
         home = tmp_path / name
         home.mkdir()
         (home / "config.yaml").write_text("code_execution:\n  mode: strict\n  timeout: 20\n")
+        profile_definitions = copy.deepcopy(definitions)
+        if collision_fixture and name == "a":
+            # Publish fixture collision schemas before constructing the agent's
+            # frozen prefix. Real file handler; no real Web provider is claimed.
+            read = registry.get_entry("read_file")
+            for wire in ["web_search", "web_extract"]:
+                schema = copy.deepcopy(read.schema)
+                schema["name"] = wire
+                registry.register(name=wire, toolset="qualification-file-alias", schema=schema,
+                                  handler=read.handler, check_fn=read.check_fn,
+                                  scope=str(home), override=True)
+                profile_definitions.append({"type": "function", "function": schema})
         with server._session_profile_runtime_scope({"profile_home": str(home)}, hydrate_secrets=False):
-            with (patch("model_tools.get_tool_definitions", return_value=copy.deepcopy(definitions)),
+            with (patch("model_tools.get_tool_definitions", return_value=copy.deepcopy(profile_definitions)),
                   patch("model_tools.check_toolset_requirements", return_value={}),
                   patch("agent.process_bootstrap.OpenAI"),
                   patch("agent.model_metadata.fetch_model_metadata", return_value={})):
@@ -604,8 +620,8 @@ def test_mounted_web_desktop_cards_real_approval_queue(owned_sessions, monkeypat
 def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, request, tmp_path):
     """Real WASM parents, consent UI, Hono/D1, ticket WS and actual owned handlers.
 
-    Only the fixture issuer/profile mapping, four-tool provider construction and
-    model completion/loopback upgrade are substituted. No stopped compute starts.
+    Fixture issuer/profile mapping, provider construction, two scoped collision
+    names backed by real file handlers and model completion/loopback upgrade are substituted. No stopped compute starts.
     """
     import asyncio
     import os
@@ -673,7 +689,8 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
         try:
             stdout, stderr = process.communicate(timeout=210)
             assert process.returncode == 0, stdout + "\n" + stderr
-            for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny"]:
+            for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny",
+                         "js-alias", "python-alias"]:
                 assert f"local owned browser qualified: {mode}" in stdout, stdout
             assert (home / "ws-browser-output-js-write").read_text() == "js-write"
             assert (home / "ws-browser-output-python-write").read_text() == "python-write"
@@ -682,10 +699,11 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
             attempts = owned_sessions["a"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"]
             assert sorted((row["tool_name"], row["state"]) for row in attempts) == [
                 ("read_file", "returned"), ("read_file", "returned"),
+                ("web_extract", "returned"), ("web_search", "returned"),
                 ("write_file", "returned"), ("write_file", "returned")]
             assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
-            print(json.dumps({"qualified": "real-browser-api-hermes", "scenarios": 6,
-                              "actual_attempts": 4, "replay_redispatches": 0, "foreign_profile_attempts": 0}))
+            print(json.dumps({"qualified": "real-browser-api-hermes", "scenarios": 8,
+                              "actual_attempts": 6, "replay_redispatches": 0, "foreign_profile_attempts": 0}))
             for owner in ["a", "b"]:
                 assert owned_sessions[owner]["agent"]._session_messages == [
                     {"role": "user", "content": "owned conversation"}]
