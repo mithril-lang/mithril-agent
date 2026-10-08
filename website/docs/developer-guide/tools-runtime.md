@@ -480,3 +480,32 @@ validation, the actual route/upgrade/transport, reattachment, handlers, files an
 DB are real. This does not establish OAuth login, a public account, the Fund
 Worker relay/HTTP grant wiring, installed Desktop behavior or all-operation
 readiness. The listener, process and thread are closed after qualification.
+
+### Peer response ownership and actual approval queue
+
+An `srq-` ID identifies a pending question; knowing it does not authorize an
+answer. Network peer responses, `request.answer`, and `clarify.lock` check the
+ContextVar-bound transport's attachment to the original live session record,
+profile home and durable session key captured when the request was minted.
+Known authenticated actor/owner mismatches are refused. Legacy token and stdio
+transports retain their existing attachment authority; this does not redesign
+session attachment or establish full principal isolation. Replaced records and
+changed profile/session keys cannot answer an older request. Approval choices
+must be among the choices actually offered. Internal first-settlement identity
+checks preserve cancellation and duplicate-answer behavior.
+
+Compute-host mirrors retain the same private captured scope; response/lock
+forwarding checks it before changing the mirror. The child binds its existing
+host transport while processing forwarded answers. No new wire fields or model
+conversation are introduced.
+
+The owned-call qualifier also starts the real `_await_gateway_decision` wait
+and `_emit_approval_request` registration. Actual dispatcher responses must leave
+the queue pending for foreign transports, unoffered choices, changed profiles
+and replaced sessions. A matching response resolves it once; cancellation and
+an unsent/lost reply withdraw without inventing consent. With the explicit
+compiled-module option, Node imports the sibling `owned-gateway-approvals.js`,
+captures the real request, rejects foreign/unoffered/replayed choices and returns
+the original-ID response which the actual dispatcher resolves in that queue.
+This case uses captured frames and a Node subprocess, not a mounted Web/Desktop
+card, production socket or installed-client approval/effect qualification.

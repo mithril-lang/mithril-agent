@@ -142,6 +142,7 @@ def _relay_compute_host_rpc(message: dict) -> bool:
             with _history_lock(session):
                 session["_compute_host_open_request"] = {
                     "id": message["id"], "method": message["method"], "params": dict(params)}
+                session["_compute_host_open_scope"] = _server_request_scope(str(params.get("session_id") or ""))
     elif isinstance(params, dict) and params.get("type") == "request.cancel":
         session = _sessions.get(str(params.get("session_id") or ""))
         payload = params.get("payload")
@@ -149,6 +150,7 @@ def _relay_compute_host_rpc(message: dict) -> bool:
             with _history_lock(session):
                 if _open_request_matches(session, payload.get("id")):
                     session.pop("_compute_host_open_request", None)
+                    session.pop("_compute_host_open_scope", None)
     return write_json(message)
 
 
@@ -178,8 +180,16 @@ def _relay_compute_host_response(frame: dict) -> bool:
     if located is None or not _session_uses_compute_host(located[1]):
         return False
     sid, session = located
+    if not _client_server_request_authority(sid, session.get("_compute_host_open_scope")):
+        return False
     with _history_lock(session):
+        mirrored = session.get("_compute_host_open_request", {})
+        if mirrored.get("method") == "approval" and "error" not in frame:
+            result = frame.get("result")
+            if not isinstance(result, dict) or result.get("choice") not in mirrored.get("params", {}).get("choices", []):
+                return False
         session.pop("_compute_host_open_request", None)
+        session.pop("_compute_host_open_scope", None)
     try:
         _get_compute_host_supervisor().respond(sid, {"frame": dict(frame)})
     except Exception:
@@ -194,6 +204,8 @@ def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answ
     if located is None or not _session_uses_compute_host(located[1]):
         return None
     sid, session = located
+    if not _client_server_request_authority(sid, session.get("_compute_host_open_scope")):
+        return _err(rid, 4001, "server request is not attached to this transport")
     try:
         ack = _get_compute_host_supervisor().respond(
             sid, {"lock": {"request_id": request_id, "question_id": question_id, "answer": answer}})

@@ -52,7 +52,7 @@ def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monke
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "host-clarify"
-    server._sessions[sid] = {"history_lock": threading.Lock()}
+    server._sessions[sid] = {"history_lock": threading.Lock(), "transport": host._transport}
     req = server_requests.ServerRequest(sid, "clarify", {"question": "?"})
     with server_requests._lock:
         server_requests._open[req.id] = req

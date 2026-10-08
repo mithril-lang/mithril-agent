@@ -77,7 +77,12 @@ def capture(server):
     """Redirect server's real stdout to a StringIO and return (server, buf)."""
     buf = io.StringIO()
     server._real_stdout = buf
-    return server, buf
+    server._sessions["s1"] = {"session_key": "s1", "transport": server._stdio_transport}
+    token = server.bind_transport(server._stdio_transport)
+    try:
+        yield server, buf
+    finally:
+        server.reset_transport(token)
 
 
 # ── JSON-RPC envelope ────────────────────────────────────────────────
@@ -378,7 +383,7 @@ def test_server_request_waits_for_a_ws_client_that_advertised(server):
     thread.start()
     req = _wait_open(server_requests)
     assert peer.frames[-1]["id"] == req.id
-    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}) is None
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}, transport=peer) is None
     thread.join(timeout=5)
     assert box["r"] == {"value": "yes"}
     # Disconnect forgets the advertisement; the next connection must advertise again.

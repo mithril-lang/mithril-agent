@@ -491,12 +491,14 @@ def test_compute_host_open_request_survives_activation_and_proxies_locks_and_res
     sid = "host-clarify"
     supervisor = _Supervisor()
     session = _session(agent=None, agent_ready=threading.Event(), _compute_host_active=True)
+    session["transport"] = server._stdio_transport
     server._sessions[sid] = session
     monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: supervisor)
     monkeypatch.setattr(server, "write_json", lambda _message: True)
 
     questions = [{"qid": "q0", "question": "First?", "choices": ["a"]}, {"qid": "q1", "question": "Second?", "choices": ["b"]}]
+    token = server.bind_transport(server._stdio_transport)
     try:
         server._relay_compute_host_rpc({"jsonrpc": "2.0", "id": "srq-host", "method": "clarify",
                                         "params": {"session_id": sid, "questions": questions}})
@@ -504,6 +506,13 @@ def test_compute_host_open_request_survives_activation_and_proxies_locks_and_res
         activated = server._live_session_payload(sid, session)
         assert activated["open_requests"] == [{"id": "srq-host", "method": "clarify",
                                                "params": {"session_id": sid, "questions": questions}}]
+
+        import io
+        from tui_gateway.transport import StdioTransport
+        foreign = StdioTransport(lambda: io.StringIO(), threading.Lock())
+        server.dispatch({"jsonrpc": "2.0", "id": "srq-host", "result": {}}, transport=foreign)
+        assert supervisor.responses == []
+        assert server._live_session_payload(sid, session)["open_requests"]
 
         response = server.handle_request({"id": "lock-q0", "method": "clarify.lock",
                                           "params": {"request_id": "srq-host", "question_id": "q0", "answer": "a"}})
@@ -515,7 +524,18 @@ def test_compute_host_open_request_survives_activation_and_proxies_locks_and_res
         assert server.dispatch({"jsonrpc": "2.0", "id": "srq-host", "result": {}}) is None
         assert supervisor.responses[-1] == (sid, {"frame": {"jsonrpc": "2.0", "id": "srq-host", "result": {}}}, 15.0)
         assert "open_requests" not in server._live_session_payload(sid, session)
+
+        server._relay_compute_host_rpc({"jsonrpc": "2.0", "id": "srq-host-approval", "method": "approval",
+                                        "params": {"session_id": sid, "choices": ["once", "deny"]}})
+        count = len(supervisor.responses)
+        server.dispatch({"jsonrpc": "2.0", "id": "srq-host-approval", "result": {"choice": "always"}})
+        assert len(supervisor.responses) == count
+        assert server._live_session_payload(sid, session)["open_requests"]
+        server.dispatch({"jsonrpc": "2.0", "id": "srq-host-approval", "result": {"choice": "once"}})
+        assert len(supervisor.responses) == count + 1
+        assert "open_requests" not in server._live_session_payload(sid, session)
     finally:
+        server.reset_transport(token)
         server._sessions.pop(sid, None)
 
 

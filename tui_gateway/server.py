@@ -683,10 +683,24 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
+def _server_request_scope(sid: str):
+    session = _sessions.get(sid)
+    return (session, session.get("profile_home"), session.get("session_key")) if session is not None else None
+
+
+def _client_server_request_authority(sid: str, scope) -> bool:
+    transport, session = _current_session_steer_authority(sid)
+    if (scope is None or session is not scope[0] or session.get("profile_home") != scope[1]
+            or session.get("session_key") != scope[2]):
+        return False
+    owner, actor = _session_auth_user_id(session), _transport_auth_user_id(transport)
+    return owner is None or actor is None or owner == actor
+
+
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
-                            lambda sid: _session_client_answers_requests(sid))
+                            lambda sid: _session_client_answers_requests(sid), _server_request_scope)
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background

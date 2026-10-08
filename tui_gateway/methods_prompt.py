@@ -1025,7 +1025,7 @@ def _(rid, params: dict) -> dict:
         return proxied
     from tui_gateway import server_requests
     try:
-        remaining = server_requests.lock_answer(request_id, question_id, answer)
+        remaining = server_requests.lock_answer(request_id, question_id, answer, authorize=_client_server_request_authority)
     except ValueError as e:
         return _err(rid, 4002, str(e))
     if remaining is None:
@@ -1045,7 +1045,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4002, "id and an object result required")
     from tui_gateway import server_requests
     frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
-    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
+    if server_requests.resolve_response(frame, authorize=_client_server_request_authority) or _relay_compute_host_response(frame):
         return _ok(rid, {"status": "ok"})
     return _ok(rid, {"status": "expired"})
 

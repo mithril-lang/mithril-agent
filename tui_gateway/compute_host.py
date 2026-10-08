@@ -212,12 +212,18 @@ class ComputeHost:
                 self._reply("respond.error", sid, request_id, message=error)
                 return
             from tui_gateway import server_requests
-            if isinstance(params.get("lock"), dict):
-                response = server._methods["clarify.lock"](request_id, params["lock"])
-            else:
-                response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
-                resolved = server_requests.resolve_response(response_frame)
-                response = {"jsonrpc": "2.0", "id": request_id, "result": {"status": "ok" if resolved else "expired"}}
+            from tui_gateway.transport import bind_transport, reset_transport
+            token = bind_transport(self._transport)
+            try:
+                if isinstance(params.get("lock"), dict):
+                    response = server._methods["clarify.lock"](request_id, params["lock"])
+                else:
+                    response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
+                    resolved = server_requests.resolve_response(response_frame,
+                        authorize=lambda owner_sid, scope: owner_sid == sid and server._client_server_request_authority(owner_sid, scope))
+                    response = {"jsonrpc": "2.0", "id": request_id, "result": {"status": "ok" if resolved else "expired"}}
+            finally:
+                reset_transport(token)
             self._reply("respond.ack", sid, request_id, response=response)
         self._guarded(frame, "respond.error", body)
 

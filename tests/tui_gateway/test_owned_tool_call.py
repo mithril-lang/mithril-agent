@@ -404,3 +404,95 @@ def test_compiled_owned_sdk_authenticated_websocket(owned_sessions, monkeypatch,
         thread.join(timeout=10)
         listener.close()
         assert not thread.is_alive()
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("route", ["peer", "request.answer", "compiled-sdk", "cancel", "lost"])
+def test_real_approval_queue_rejects_foreign_transport(owned_sessions, monkeypatch, request, route):
+    """A guessed peer ID must not resolve another attached conversation's real queue."""
+    import tui_gateway.server as server
+    from tui_gateway import server_requests
+    from tools import approval
+    from tools.approval_gateway_wait import _await_gateway_decision
+    from agent.memory_provider import spawn_context_thread
+
+    module = request.config.getoption("--owned-sdk-module")
+    if route == "compiled-sdk":
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not module or not node:
+            pytest.skip("compiled approval qualifier needs an SDK module and Node")
+        module = Path(module).with_name("owned-gateway-approvals.js")
+        assert module.is_file()
+
+    monkeypatch.setattr(approval, "_gateway_queues", {})
+    frames = queue.Queue()
+    monkeypatch.setattr(server_requests, "_write", frames.put)
+    results = []
+    worker = spawn_context_thread(target=lambda: results.append(_await_gateway_decision(
+        "same-durable-owner", lambda data: server._emit_approval_request("a", data),
+        {"command": "owned qualification operation", "description": "test only", "allow_session": False, "allow_permanent": False},
+    )), name="owned-approval-qualifier")
+    worker.start()
+    try:
+        request = frames.get(timeout=10)
+        frame = {"jsonrpc": "2.0", "id": request["id"], "result": {"choice": "once"}}
+        if route == "compiled-sdk":
+            script = """
+import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+const { OwnedGatewayApprovals } = await import(pathToFileURL(process.argv[1]).href);
+const req = JSON.parse(readFileSync(0, 'utf8'));
+const custody = new OwnedGatewayApprovals();
+assert.equal(custody.receive(req, true).event.session_id, 'a');
+assert.equal(custody.choose(req.id, 'b', 'once'), null);
+assert.equal(custody.choose(req.id, 'a', 'always'), null);
+const reply = custody.choose(req.id, 'a', 'once');
+assert.equal(custody.choose(req.id, 'a', 'once'), null);
+assert.equal(custody.receive(req, true).reply.error.code, -32602);
+console.log(JSON.stringify(reply));
+"""
+            completed = subprocess.run([node, "--input-type=module", "-e", script, str(module)],
+                input=json.dumps(request), text=True, capture_output=True, timeout=10, check=True)
+            frame = json.loads(completed.stdout)
+        if route == "request.answer":
+            frame = {"jsonrpc": "2.0", "id": "proxy", "method": route,
+                     "params": {"id": request["id"], "result": {"choice": "once"}}}
+        server.dispatch(frame, transport=owned_sessions["b"]["transport"])
+        assert approval.list_gateway_approvals("same-durable-owner"), "foreign peer resolved the approval queue"
+        assert server_requests.open_requests("a"), "foreign peer consumed the server request"
+        invalid = {"jsonrpc": "2.0", "id": request["id"], "result": {"choice": "always"}}
+        server.dispatch(invalid, transport=owned_sessions["a"]["transport"])
+        assert server_requests.open_requests("a"), "unoffered choice consumed the server request"
+        original = owned_sessions["a"]
+        for key in ["profile_home", "session_key"]:
+            value = original[key]
+            original[key] = "retired-scope"
+            try:
+                server.dispatch(frame, transport=original["transport"])
+                assert server_requests.open_requests("a"), "retired profile/session consumed the request"
+            finally:
+                original[key] = value
+        owned_sessions["a"] = dict(original)
+        try:
+            server.dispatch(frame, transport=original["transport"])
+            assert server_requests.open_requests("a"), "replacement session consumed an older request"
+        finally:
+            owned_sessions["a"] = original
+        if route in {"cancel", "lost"}:
+            assert worker.is_alive() and approval.list_gateway_approvals("same-durable-owner")
+            server_requests.cancel("a", reason="session_closed")
+            server.dispatch(frame, transport=original["transport"])
+            worker.join(timeout=10)
+            assert not worker.is_alive() and results[0]["choice"] is None
+            assert not approval.list_gateway_approvals("same-durable-owner")
+            return
+        server.dispatch(frame, transport=owned_sessions["a"]["transport"])
+        worker.join(timeout=10)
+        assert not worker.is_alive() and results[0]["choice"] == "once"
+        assert not approval.list_gateway_approvals("same-durable-owner")
+    finally:
+        approval.unregister_gateway_notify("same-durable-owner")
+        server_requests.cancel("a", reason="session_closed")
+        worker.join(timeout=5)
