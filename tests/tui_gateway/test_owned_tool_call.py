@@ -496,3 +496,105 @@ console.log(JSON.stringify(reply));
         approval.unregister_gateway_notify("same-durable-owner")
         server_requests.cancel("a", reason="session_closed")
         worker.join(timeout=5)
+
+
+@pytest.mark.platforms("posix")
+def test_mounted_web_desktop_cards_real_approval_queue(owned_sessions, monkeypatch, request, tmp_path):
+    """Production clients + shared mounted card reach real ticket WS/approval waits."""
+    import asyncio
+    import shutil
+    import socket
+    import subprocess
+    import time
+    from fastapi import FastAPI
+    import uvicorn
+    import hermes_cli.web_server as web
+    from hermes_cli.web_routers import chat_ws
+    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    import tui_gateway.server as server
+    from tui_gateway import server_requests
+    from tools import approval
+    from tools.approval_gateway_wait import _await_gateway_decision
+    from agent.memory_provider import spawn_context_thread
+
+    module = request.config.getoption("--owned-sdk-module")
+    clients = {surface: request.config.getoption(f"--approval-ui-{surface}-client") for surface in ["web", "desktop"]}
+    node = shutil.which("node")
+    if not node or not module or not all(clients.values()):
+        pytest.skip("mounted qualifier needs compiled SDK, both production client sources and Node")
+    for source in clients.values():
+        assert Path(source).is_file()
+    sdk = Path(module).parent.parent
+    dependencies = sdk.parent.parent
+    assert (dependencies / "esbuild").is_dir() and (dependencies / "jsdom").is_dir()
+    assert json.loads((sdk / "package.json").read_text())["version"] == "0.6.25-agency.12"
+    home = Path(owned_sessions["a"]["profile_home"])
+    monkeypatch.setattr(approval, "_gateway_queues", {})
+    monkeypatch.setattr(web.app.state, "auth_required", True, raising=False)
+    monkeypatch.setattr(chat_ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    monkeypatch.setattr(server, "_profile_home", lambda profile: home if profile == "a" else None)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    for name in ["_ensure_skin_watcher", "_ensure_lease_watcher",
+                 "_start_backend_heartbeat_refresher", "_schedule_startup_orphan_sweep"]:
+        monkeypatch.setattr(server, name, lambda: None)
+    app = FastAPI()
+    app.include_router(chat_ws.router)
+    decisions, workers = [], []
+
+    @app.post("/qualification/begin")
+    async def begin():
+        assert not approval.list_gateway_approvals("same-durable-owner")
+        decisions.clear()
+        worker = spawn_context_thread(target=lambda: decisions.append(_await_gateway_decision(
+            "same-durable-owner", lambda data: server._emit_approval_request("a", data),
+            {"command": "qualification-only operation", "description": "local mounted card qualification",
+             "allow_session": False, "allow_permanent": False},
+        )), name="mounted-approval-wait")
+        workers.append(worker)
+        worker.start()
+        return {"started": True}
+
+    @app.post("/qualification/state")
+    async def state():
+        return {"pending": bool(approval.list_gateway_approvals("same-durable-owner")),
+                "choice": decisions[-1]["choice"] if decisions else None}
+
+    @app.post("/qualification/cancel")
+    async def cancel():
+        server_requests.cancel("a", reason="session_closed")
+        # Avoid blocking the ASGI loop while the worker finishes its real queue withdrawal.
+        await asyncio.to_thread(workers[-1].join, 5)
+        assert not workers[-1].is_alive()
+        return {"cancelled": True}
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    service = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
+    thread = spawn_context_thread(target=lambda: asyncio.run(service.serve(sockets=[listener])), name="mounted-approval-ws")
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not service.started and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert service.started
+        config = {"http": f"http://127.0.0.1:{port}", "ws": f"ws://127.0.0.1:{port}/api/ws",
+                  "tickets": [mint_ticket(user_id="fixture-owner", provider="stub") for _ in range(4)],
+                  "dependencies": str(dependencies), "sdk": str(sdk), "clients": clients, "output": str(tmp_path)}
+        completed = subprocess.run([node, str(Path(__file__).parent / "fixtures" / "owned_approval_ui.mjs")],
+            input=json.dumps(config), text=True, capture_output=True, timeout=60)
+        assert completed.returncode == 0, completed.stderr
+        reports = json.loads(completed.stdout)
+        assert reports == [{"surface": surface, "mode": mode, "passed": True}
+                           for surface in ["web", "desktop"] for mode in ["once", "cancel", "disconnect"]]
+        assert not approval.list_gateway_approvals("same-durable-owner")
+        assert owned_sessions["a"]["agent"]._session_messages == [{"role": "user", "content": "owned conversation"}]
+    finally:
+        server_requests.cancel("a", reason="session_closed")
+        approval.unregister_gateway_notify("same-durable-owner")
+        for worker in workers:
+            worker.join(timeout=5)
+        service.should_exit = True
+        thread.join(timeout=10)
+        listener.close()
+        assert not thread.is_alive() and all(not worker.is_alive() for worker in workers)

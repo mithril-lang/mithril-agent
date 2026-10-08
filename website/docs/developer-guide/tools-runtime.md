@@ -509,3 +509,29 @@ captures the real request, rejects foreign/unoffered/replayed choices and return
 the original-ID response which the actual dispatcher resolves in that queue.
 This case uses captured frames and a Node subprocess, not a mounted Web/Desktop
 card, production socket or installed-client approval/effect qualification.
+
+The optional mounted qualifier adds the production Web and Desktop client source
+paths to the canonical command above:
+
+```sh
+--approval-ui-web-client=/path/to/fund/apps/web/src/routes/app/dashboard-client.ts \
+--approval-ui-desktop-client=/path/to/desktop/src/renderer/src/screens/Chat/dashboardGatewayClient.ts
+```
+
+These flags are qualification inputs, not runtime configuration. Both sources and
+the compiled agency.12 SDK must be present; the SDK's owning dependency directory
+must supply esbuild/jsdom/React. The qualifier bundles the actual clients with the
+compiled shared card, mounts it in jsdom and connects real Node WebSockets to the
+actual private loopback dashboard ticket route. Begin/cancel/state HTTP routes
+exist only in that temporary test app and control the real queue wait. The
+credential-delivery adapter supplies server-minted test tickets. Both surfaces
+verify explicit choice, cancellation, disconnect and a fresh-ticket resume which
+restores the original peer ID; only a new click resolves it. All threads, sockets
+and waits are closed. React browser-bundle scheduler ports require explicit Node
+exit after successful assertions and client closure.
+
+This is production-client/canonical-card local network qualification. It does not
+mount the whole Web screen/Desktop hook or establish the actual Fund Worker relay
+network, public OAuth, original public chat, installed client, provider inference,
+tool effects or full principal isolation. The small card harness applies captured
+cancel/close notices; the production consumer screen/hook remains a separate gate.
