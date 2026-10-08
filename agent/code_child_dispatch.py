@@ -21,6 +21,8 @@ class _ParentDispatch:
         self.turn = getattr(agent, "_current_turn_id", None)
         self.session = getattr(agent, "session_id", None)
         self.names = frozenset(agent.valid_tool_names or ()) | _tool_search_scoped_names(agent)
+        from agent.tool_dispatch_snapshot import ToolDispatchSnapshot
+        self.schemas = ToolDispatchSnapshot(agent, self.names)
         self.active = True
         self.thread = threading.get_ident()
         from agent.code_child_attempts import CodeChildAttempts
@@ -41,7 +43,7 @@ class _ParentDispatch:
         allowed = set(self.agent.valid_tool_names or ()) | _tool_search_scoped_names(self.agent)
         if name not in self.names or name not in allowed or name == "execute_code":
             return f"Tool '{name}' is not available to this parent agent."
-        return None
+        return self.schemas.rejection(name)
 
     def dispatch(self, task_id, name, args):
         from agent.tool_executor import (

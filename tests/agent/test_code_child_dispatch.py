@@ -168,3 +168,113 @@ def test_parent_dispatch_rechecks_profile_task_interrupt_and_current_grant(tmp_p
         managed = _run_agent_tool_execution_middleware(agent, function_name="execute_code",
             function_args={}, effective_task_id=task, tool_call_id="parent-call", execute=execute)
     assert managed.result == "checked"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("kind", ["local", "remote"])
+@pytest.mark.parametrize("publication", ["published", "deferred"])
+def test_real_child_rejects_same_name_schema_change_after_policy_wait(tmp_path, monkeypatch, kind, publication):
+    """A live schema replacement during policy cannot authorize a different child call."""
+    import copy
+    import threading
+    import tools.file_tools  # noqa: F401
+    import tui_gateway.server as server
+    from agent import secret_scope
+    from agent.tool_executor import _run_agent_tool_execution_middleware
+    from hermes_state import SessionDB
+    from tools.code_kernel import execute_in_session_kernel, shutdown_kernels_for_owner
+    from tools.code_kernel_remote import execute_in_remote_kernel, shutdown_remote_kernels_for_owner
+    from pm.shell import bash
+
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    shell = bash()
+    assert shell
+
+    class ShellTransport:
+        def get_temp_dir(self):
+            return str(tmp_path)
+
+        def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+            result = subprocess.run([shell, "-c", command], cwd=cwd, timeout=timeout,
+                env={"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "LANG": "C.UTF-8"},
+                input=stdin_data or "", capture_output=True, text=True)
+            return {"output": result.stdout, "returncode": result.returncode}
+
+    homes = {name: tmp_path / name for name in ["a", "b"]}
+    for name, home in homes.items():
+        home.mkdir()
+        (home / "owned.txt").write_text(f"{name}-owned-payload")
+        if publication == "deferred":
+            (home / "config.yaml").write_text("tools:\n  tool_search:\n    defer: [read_file]\n")
+    task = "same-public-parent"
+    for visit, name in enumerate(["a", "b", "a"]):
+        home = homes[name]
+        (home / "owned.txt").write_text(f"{name}-owned-payload visit {visit}")
+        with server._session_profile_runtime_scope({"profile_home": str(home)}, hydrate_secrets=False):
+            agent = _agent()
+            db = SessionDB(db_path=home / "state.db")
+            if db.get_session(task) is None:
+                db.create_session(session_id=task, source="test", model="test")
+            agent.session_id, agent._session_db = task, db
+            from tools.registry import registry
+            original_entry = registry.get_entry("read_file")
+            if publication == "deferred":
+                agent.tools = [d for d in agent.tools if d["function"]["name"] != "read_file"]
+                agent.valid_tool_names.remove("read_file")
+            original = copy.deepcopy(agent.tools)
+            old_before = agent._tool_guardrails.before_call
+            change = threading.Event()
+
+            def before(tool_name, args):
+                decision = old_before(tool_name, args)
+                if tool_name == "read_file" and change.is_set():
+                    if publication == "deferred":
+                        schema = copy.deepcopy(original_entry.schema)
+                        schema["parameters"]["required"] = ["changed-field"]
+                        registry.register("read_file", original_entry.toolset, schema,
+                            original_entry.handler, scope=str(home), override=True)
+                        return decision
+                    from tools.mcp_tool_agent import _agent_tools_lock
+                    with _agent_tools_lock:
+                        for definition in agent.tools:
+                            if definition["function"]["name"] == "read_file":
+                                definition["function"]["parameters"]["required"] = ["changed-field"]
+                return decision
+
+            agent._tool_guardrails.before_call = before
+            code = ("import json\nfrom hermes_tools import read_file\n" +
+                    f"print(json.dumps(read_file({str(home / 'owned.txt')!r})))")
+
+            def execute(_args):
+                if kind == "local":
+                    result = json.loads(execute_in_session_kernel(code, task_id=task, mode="strict",
+                        child_python=sys.executable, child_cwd=str(home), sandbox_tools=frozenset({"read_file"}),
+                        timeout=20, max_tool_calls=2, reset=False, is_interrupted=lambda: False))
+                    assert result["exit_code"] == 0, result
+                    return result["output"].strip()
+                result = execute_in_remote_kernel(code, env=ShellTransport(), env_type="schema-fixture",
+                    task_env_id=task, sandbox_tools=frozenset({"read_file"}), timeout=20,
+                    max_tool_calls=2, reset=False, idle_exit=30)
+                assert result and result["status"] == "success", result
+                return result["stdout"].strip()
+
+            def run():
+                return json.loads(_run_agent_tool_execution_middleware(agent, function_name="execute_code",
+                    function_args={}, effective_task_id=task, tool_call_id="parent-call", execute=execute).result)
+
+            try:
+                allowed = run()
+                assert f"{name}-owned-payload" in allowed.get("content", ""), allowed
+                assert agent.tools == original  # Snapshot capture does not republish model context.
+                change.set()
+                rejected = run()
+                assert "schema changed" in rejected.get("error", ""), rejected
+                rows = db._read_all("SELECT * FROM session_tool_attempts WHERE session_id=? ORDER BY created_at", (task,))
+                assert rows[-1]["state"] == "rejected" and rows[-1]["dispatched_at"] is None
+                assert rows[-2]["state"] == "returned"
+            finally:
+                shutdown_kernels_for_owner(task)
+                shutdown_remote_kernels_for_owner(task)
+                if publication == "deferred":
+                    registry.deregister("read_file", scope=str(home))
+                db.close()
