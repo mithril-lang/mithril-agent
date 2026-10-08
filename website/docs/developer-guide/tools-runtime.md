@@ -293,6 +293,18 @@ retention is bounded by age and count.
 
 Tool calls may execute sequentially or concurrently depending on the tool mix and interaction requirements.
 
+The generated local socket client (Unix socket or loopback TCP) serializes each
+child request/response. A persistent kernel may reconnect if connection setup
+fails or an old socket is already at EOF before any operation is sent. Once
+`sendall` starts, a partial send, disconnect or lost response is an unknown
+outcome: close the socket, report that the request was not retried, and never
+resend it automatically. Even a complete host-side write does not establish
+that its receipt reached the child. A later independent call can use a fresh
+connection. Real socket/process tests cover a dispatched registry file write
+with lost response and a stale socket before send, for both transports on the
+test host; this does not establish installed Windows or distributed receipt
+recovery.
+
 Single-call agent dispatch (`AIAgent._invoke_tool`, also used by concurrent workers)
 resolves currently exposed context-engine names through the owning agent's
 `context_compressor.handle_tool_call`, passing the live `messages` list. These
