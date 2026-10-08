@@ -286,22 +286,41 @@ INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES = frozenset({"todo_list", "session_search",
 
 
 def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineToolExecutor]:
-    """Inline executor for ``invoke_tool`` (concurrent path), or None for registry dispatch.
+    from agent.inline_dispatch_binding import resolve_bound_inline_executor
+
+    executor, _ = select_invoke_tool_executor(agent, function_name)
+    return resolve_bound_inline_executor(agent, function_name, executor)
+
+
+def select_invoke_tool_executor(agent, function_name: str):
+    """Select an executor and host-local identity; registry routes have no executor.
 
     Precedence: todo_list/session_search/memory, then context-engine-owned names,
     then memory-manager tools, then the remaining inline tools (``message_agent``
     excluded). Context engines do not replace existing inline executors.
     """
+    from agent.inline_dispatch_binding import callable_identity
+
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
-        return INLINE_TOOL_EXECUTORS[function_name]
+        executor = INLINE_TOOL_EXECUTORS[function_name]
+        return executor, ("inline", callable_identity(executor))
     if (function_name not in INLINE_TOOL_EXECUTORS
             and function_name in (getattr(agent, "_context_engine_tool_names", None) or ())):
-        return lambda agent, args, ctx: agent.context_compressor.handle_tool_call(
-            function_name, args, messages=ctx.messages,
-        )
+        engine = agent.context_compressor
+        handler = engine.handle_tool_call
+        return (lambda agent, args, ctx: handler(function_name, args, messages=ctx.messages),
+                ("context", id(engine), callable_identity(handler)))
     memory_manager = agent._memory_manager
     if memory_manager and memory_manager.has_tool(function_name):
-        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
+        resolve = getattr(memory_manager, "resolve_tool_dispatch", None)
+        if resolve is not None:
+            provider, handler, dispatch = resolve(function_name)
+            return (lambda agent, args, ctx: dispatch(args),
+                    ("memory", id(memory_manager), id(provider), callable_identity(handler)))
+        handler = memory_manager.handle_tool_call
+        return (lambda agent, args, ctx: handler(function_name, args),
+                ("memory-manager", id(memory_manager), callable_identity(handler)))
     if function_name == "message_agent":
-        return None
-    return INLINE_TOOL_EXECUTORS.get(function_name)
+        return None, ("registry",)
+    executor = INLINE_TOOL_EXECUTORS.get(function_name)
+    return executor, ("inline", callable_identity(executor)) if executor else ("registry",)

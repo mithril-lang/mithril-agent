@@ -72,6 +72,7 @@ class _ParentDispatch:
             dispatched = True
             with self.schemas.bind_registration(name):
                 return self.agent._invoke_tool(name, final_args, task_id, ref.call_id,
+                    messages=getattr(self.agent, "_session_messages", None),
                     pre_tool_block_checked=True, skip_tool_request_middleware=True,
                     skip_tool_execution_middleware=True, tool_request_middleware_trace=list(ref.trace))
 

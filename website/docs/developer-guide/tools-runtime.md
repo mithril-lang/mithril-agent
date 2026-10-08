@@ -315,6 +315,28 @@ that route immediately. Callers still bind the owning profile and acquire the
 normal turn authority; this resolver is not a standalone tool-only RPC, lease,
 budget or durable receipt contract.
 
+Inline route selection captures the owning context engine's bound handler and
+the canonical memory manager's selected provider and bound handler. Replacing
+an engine, provider mapping or provider handler after selection cannot redirect
+that invocation. Memory-provider metrics and error normalization still run
+through `MemoryManager`; route selection does not bypass that observer.
+
+Parent-bound Python children additionally capture these execution identities
+alongside their schemas. Recheck before policy and immediately before invocation;
+the host-only `agent/inline_dispatch_binding.py` binding checks again at the
+canonical inline resolver. A policy-time replacement settles as `rejected`
+without a dispatch timestamp. A replacement after the agent's check but before
+inline resolution returns an error through the started invocation and settles
+as `returned-error`. Neither case calls the replacement. Changes after selection
+cannot redirect the captured callable. Children receive the agent's live
+`_session_messages` list without appending child transcript rows.
+
+This pins canonical context/memory-provider execution targets and inline table
+entries, not the mutable stores/callbacks behind every inline table executor,
+plugin-internal state, custom manager internals or a deployed executor revision.
+Those require their own operation admission and qualification evidence. The
+production code sandbox allowlist is unchanged.
+
 During normal agent `execute_code` dispatch, `agent/code_child_dispatch.py` binds
 the existing local socket and remote file-RPC child consumers to the owning
 agent's middleware, plugin/pruned-argument checks, guardrails, approval callbacks,
@@ -348,8 +370,9 @@ result byte count, not arguments, credentials or result bodies. Reads use both
 session ID and attempt ID inside the same profile database. Session deletion
 cascades the metadata. A replaced/foreign-profile database is rejected. Callers
 without a session database keep their existing in-process path. This is connected
-to the real local/remote code child consumers, but does not yet expose a receipt
-readback RPC, restore result payloads, supply stable client replay IDs or provide
+to the real local/remote code child consumers. The owned `tools.attempts` RPC
+reads bounded metadata from the attached session without dispatch or retry;
+it does not restore result payloads, supply stable client replay IDs or provide
 a distributed attempt/parent-budget contract.
 
 ## Related docs

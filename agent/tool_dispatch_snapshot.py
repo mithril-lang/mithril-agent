@@ -1,6 +1,7 @@
 """Pin actual agent/deferred tool definitions without rebuilding conversation context."""
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 
@@ -53,6 +54,8 @@ class ToolDispatchSnapshot:
         from tools.dispatch_binding import capture_dispatch_binding
         from tools.registry import registry
         self.registrations = {name: capture_dispatch_binding(registry, name) for name in names}
+        from agent.inline_dispatch_binding import InlineDispatchBinding
+        self.inline = {name: InlineDispatchBinding(agent, name) for name in names}
 
     def rejection(self, name):
         try:
@@ -66,13 +69,18 @@ class ToolDispatchSnapshot:
                 return "The tool has no frozen schema in this parent dispatch."
             if expected is None or current != expected:
                 return "The tool schema changed during this parent dispatch."
+            if not self.inline[name].matches():
+                return "The inline tool execution target changed during this parent dispatch."
             from tools.registry import registry
             if not self.registrations[name].matches(registry.get_entry(name)):
                 return "The tool registration changed during this parent dispatch."
-        except (TypeError, ValueError, OverflowError):
+        except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
             return "The tool schema is unavailable during this parent dispatch."
         return None
 
+    @contextmanager
     def bind_registration(self, name):
+        from agent.inline_dispatch_binding import bind_inline_dispatch
         from tools.dispatch_binding import bind_dispatch_registration
-        return bind_dispatch_registration(self.registrations[name])
+        with bind_dispatch_registration(self.registrations[name]), bind_inline_dispatch(self.inline[name]):
+            yield

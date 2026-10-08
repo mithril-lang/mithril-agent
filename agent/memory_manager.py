@@ -645,9 +645,18 @@ class MemoryManager:
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
+        return self._dispatch_provider_tool(provider, provider.handle_tool_call, tool_name, args, **kwargs)
+
+    def resolve_tool_dispatch(self, tool_name: str):
+        """Select once; a route replacement cannot redirect the selected invocation."""
+        provider = self._tool_to_provider[tool_name]
+        handler = provider.handle_tool_call
+        return provider, handler, lambda args: self._dispatch_provider_tool(provider, handler, tool_name, args)
+
+    def _dispatch_provider_tool(self, provider, handler, tool_name, args, **kwargs):
         from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
-            result = provider.handle_tool_call(tool_name, args, **kwargs)
+            result = handler(tool_name, args, **kwargs)
         except Exception as e:
             logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e)
             record_provider_memory_call(provider.name, tool_name, args, raised=True)
