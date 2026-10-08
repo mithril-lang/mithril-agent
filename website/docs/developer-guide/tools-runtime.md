@@ -138,6 +138,15 @@ read, write and provider calls from transport-induced replay without changing th
 existing tool allowlist, approval callbacks, profile scope or per-cell call budget.
 RPC-directory cleanup belongs to the existing kernel/script lifecycle.
 
+`tests/tools/test_remote_kernel_file_rpc_live.py` also starts the actual detached
+Python runner through a credential-free local shell transport. Two cells retain
+the same process and Python namespace, use the real generated `hermes_tools`
+module and registry reader, enforce the first cell's child budget, and let the
+second cell use fresh sequence claims and its own budget. Owner shutdown is
+verified by process liveness and removal of the owned temporary directory. This
+qualifies the remote **file protocol** locally; it does not qualify SSH, a hosted
+execution environment, inference or a distributed cancellation receipt.
+
 The real-shell regression in `tests/tools/test_code_execution_file_rpc.py` invokes
 the actual registry file reader and fails result transport, then observes later
 polls. The unchanged base executes the same request twice; the fixed path executes
