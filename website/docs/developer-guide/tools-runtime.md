@@ -293,6 +293,16 @@ retention is bounded by age and count.
 
 Tool calls may execute sequentially or concurrently depending on the tool mix and interaction requirements.
 
+Single-call agent dispatch (`AIAgent._invoke_tool`, also used by concurrent workers)
+resolves currently exposed context-engine names through the owning agent's
+`context_compressor.handle_tool_call`, passing the live `messages` list. These
+plugin tools need not be registered in the global tool registry. Existing inline
+executors retain precedence; context-engine names precede memory-provider and
+registry dispatch. Removing a name from the agent's context-engine set retires
+that route immediately. Callers still bind the owning profile and acquire the
+normal turn authority; this resolver is not a standalone tool-only RPC, lease,
+budget or durable receipt contract.
+
 ## Related docs
 
 - [Toolsets Reference](../reference/toolsets-reference.md)

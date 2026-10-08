@@ -288,11 +288,17 @@ INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES = frozenset({"todo_list", "session_search",
 def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineToolExecutor]:
     """Inline executor for ``invoke_tool`` (concurrent path), or None for registry dispatch.
 
-    Precedence: todo_list/session_search/memory, then memory-manager tools, then the
-    remaining inline tools (``message_agent`` excluded).
+    Precedence: todo_list/session_search/memory, then context-engine-owned names,
+    then memory-manager tools, then the remaining inline tools (``message_agent``
+    excluded). Context engines do not replace existing inline executors.
     """
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
+    if (function_name not in INLINE_TOOL_EXECUTORS
+            and function_name in (getattr(agent, "_context_engine_tool_names", None) or ())):
+        return lambda agent, args, ctx: agent.context_compressor.handle_tool_call(
+            function_name, args, messages=ctx.messages,
+        )
     memory_manager = agent._memory_manager
     if memory_manager and memory_manager.has_tool(function_name):
         return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
