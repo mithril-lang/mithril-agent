@@ -1076,14 +1076,20 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                   "ticketUrl": f"http://127.0.0.1:{port}/qualification/ticket", "issuer": issuer,
                   "input": str(home / "ws-owned.txt"), "output": str(home / "ws-browser-output"),
                   "browserExecutable": request.config.getoption("--owned-browser-executable"),
-                  "desktopMainModule": request.config.getoption("--owned-desktop-main-module")}
+                  "desktopMainModule": request.config.getoption("--owned-desktop-main-module"),
+                  "desktopChatSource": request.config.getoption("--owned-desktop-chat-source")}
         config_path = tmp_path / "browser-fixture.json"
         config_path.write_text(json.dumps(config))
         config_path.chmod(0o600)
+        qualifier_files = ["test/browser-owned-network.test.ts"]
+        if config["desktopChatSource"]:
+            assert config["desktopMainModule"], "actual Desktop Chat qualification requires its main module"
+            qualifier_files += ["test/desktop-owned-network.test.ts"]
         process = subprocess.Popen(
-            [node, str(fund / "node_modules/vitest/vitest.mjs"), "run", "test/browser-owned-network.test.ts"],
+            [node, str(fund / "node_modules/vitest/vitest.mjs"), "run", "--maxWorkers", "1", *qualifier_files],
             cwd=fund / "apps/api", env={**os.environ, "MITHRIL_OWNED_BROWSER_FIXTURE": str(config_path),
-                                         "MITHRIL_OWNED_NATIVE_MAIN_MODULE": config["desktopMainModule"] or ""},
+                                         "MITHRIL_OWNED_NATIVE_MAIN_MODULE": config["desktopMainModule"] or "",
+                                         "MITHRIL_OWNED_DESKTOP_CHAT_SOURCE": config["desktopChatSource"] or ""},
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             stdout, stderr = process.communicate(timeout=210)
@@ -1096,6 +1102,13 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                     assert f"local owned native qualified: {mode}" in stdout, stdout
                 assert (home / "ws-browser-output-native-write").read_text() == "native-write"
                 assert not (home / "ws-browser-output-native-deny").exists()
+            if config["desktopChatSource"]:
+                for mode in ["js-read", "python-read", "js-write", "python-write",
+                             "js-deny", "python-deny", "js-alias", "python-alias"]:
+                    assert f"local owned desktop browser qualified: {mode}" in stdout, stdout
+                for language in ["js", "python"]:
+                    assert (home / f"ws-browser-output-desktop-{language}-write").read_text() == f"desktop-{language}-write"
+                    assert not (home / f"ws-browser-output-desktop-{language}-deny").exists()
             assert (home / "ws-browser-output-js-write").read_text() == "js-write"
             assert (home / "ws-browser-output-python-write").read_text() == "python-write"
             assert not (home / "ws-browser-output-js-deny").exists()
@@ -1107,10 +1120,15 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 ("write_file", "returned"), ("write_file", "returned")]
             if config["desktopMainModule"]:
                 expected_attempts += [("read_file", "returned"), ("write_file", "returned")]
+            if config["desktopChatSource"]:
+                expected_attempts += [("read_file", "returned"), ("read_file", "returned"),
+                                      ("web_search", "returned"), ("web_extract", "returned"),
+                                      ("write_file", "returned"), ("write_file", "returned")]
             assert sorted((row["tool_name"], row["state"]) for row in attempts) == sorted(expected_attempts)
             assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
             print(json.dumps({"qualified": "real-browser-api-hermes", "scenarios": 8,
                               "native_scenarios": 3 if config["desktopMainModule"] else 0,
+                              "desktop_wasm_scenarios": 8 if config["desktopChatSource"] else 0,
                               "actual_attempts": len(expected_attempts), "replay_redispatches": 0, "foreign_profile_attempts": 0}))
             for owner in ["a", "b"]:
                 assert owned_sessions[owner]["agent"]._session_messages == [

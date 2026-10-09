@@ -29,3 +29,6 @@ def pytest_addoption(parser):
 
     parser.addoption("--owned-desktop-main-module", default=None,
                      help="Optional built Desktop CloudChat/CloudWorkspace/native queue for real HTTP consent qualification")
+
+    parser.addoption("--owned-desktop-chat-source", default=None,
+                     help="Optional actual MithrilChat source for real native Chat WASM/HTTP/Web-consent qualification")
