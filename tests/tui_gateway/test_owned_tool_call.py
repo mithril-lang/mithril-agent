@@ -1087,7 +1087,10 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                   "input": str(home / "ws-owned.txt"), "output": str(home / "ws-browser-output"),
                   "browserExecutable": request.config.getoption("--owned-browser-executable"),
                   "desktopMainModule": request.config.getoption("--owned-desktop-main-module"),
-                  "desktopChatSource": request.config.getoption("--owned-desktop-chat-source")}
+                  "desktopChatSource": request.config.getoption("--owned-desktop-chat-source"),
+                  "desktopElectronMain": request.config.getoption("--owned-desktop-electron-main"),
+                  "desktopElectronPreload": request.config.getoption("--owned-desktop-electron-preload"),
+                  "desktopElectronExecutable": request.config.getoption("--owned-desktop-electron-executable")}
         config_path = tmp_path / "browser-fixture.json"
         config_path.write_text(json.dumps(config))
         config_path.chmod(0o600)
@@ -1108,6 +1111,13 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                                                  "MITHRIL_OWNED_DESKTOP_CHAT_SOURCE": config["desktopChatSource"] or ""},
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 stdout, stderr = process.communicate(timeout=210)
+                evidence = request.config.getoption("--owned-qualification-output")
+                if evidence:
+                    directory = Path(evidence)
+                    assert directory.is_absolute(), "qualification evidence requires an absolute task directory"
+                    directory.mkdir(parents=True, exist_ok=True)
+                    assert len(stdout.encode()) + len(stderr.encode()) <= 1024 * 1024
+                    (directory / (Path(qualifier_file).stem + ".log")).write_text(stdout + "\n" + stderr)
                 assert process.returncode == 0, stdout + "\n" + stderr
                 outputs.append(stdout)
             stdout = "\n".join(outputs)
@@ -1123,6 +1133,8 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 for mode in ["js-read", "python-read", "js-write", "python-write",
                              "js-deny", "python-deny", "js-alias", "python-alias"]:
                     assert f"local owned desktop browser qualified: {mode}" in stdout, stdout
+                    if config["desktopElectronMain"]:
+                        assert f"local owned electron desktop browser qualified: {mode}" in stdout, stdout
                 for language in ["js", "python"]:
                     assert (home / f"ws-browser-output-desktop-{language}-write").read_text() == f"desktop-{language}-write"
                     assert not (home / f"ws-browser-output-desktop-{language}-deny").exists()

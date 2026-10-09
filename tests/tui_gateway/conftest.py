@@ -32,3 +32,13 @@ def pytest_addoption(parser):
 
     parser.addoption("--owned-desktop-chat-source", default=None,
                      help="Optional actual MithrilChat source for real native Chat WASM/HTTP/Web-consent qualification")
+
+    parser.addoption("--owned-desktop-electron-main", default=None,
+                     help="Opt-in built real Electron qualification main entry")
+    parser.addoption("--owned-desktop-electron-preload", default=None,
+                     help="Actual built production Desktop preload for Electron qualification")
+    parser.addoption("--owned-desktop-electron-executable", default=None,
+                     help="Explicit Electron executable; no install or installed app mutation")
+
+    parser.addoption("--owned-qualification-output", default=None,
+                     help="Optional absolute task directory for bounded qualifier stdout/stderr evidence")
