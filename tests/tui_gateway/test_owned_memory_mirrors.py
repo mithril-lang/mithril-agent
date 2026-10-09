@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.tui_gateway.test_owned_tool_call import _call, owned_sessions  # noqa: F401
+from tests.tui_gateway.owned_fixture import owned_sessions  # noqa: F401
+from tests.tui_gateway.test_owned_tool_call import _call
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
 

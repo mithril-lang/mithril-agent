@@ -6,7 +6,8 @@ import json
 import pytest
 
 from agent.memory_provider import MemoryProvider
-from tests.tui_gateway.test_owned_tool_call import _call, owned_sessions  # noqa: F401
+from tests.tui_gateway.owned_fixture import owned_sessions  # noqa: F401
+from tests.tui_gateway.test_owned_tool_call import _call
 
 
 class ProviderCanary(MemoryProvider):

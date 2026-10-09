@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from tests.tui_gateway.test_owned_memory_mirrors import install_mirrors
-from tests.tui_gateway.test_owned_tool_call import _call, _target_preview, owned_sessions  # noqa: F401
+from tests.tui_gateway.owned_fixture import owned_sessions  # noqa: F401
+from tests.tui_gateway.test_owned_tool_call import _call, _target_preview
 
 
 @pytest.mark.parametrize("target", ["memory", "user"])

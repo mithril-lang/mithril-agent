@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from tests.tui_gateway.test_owned_tool_call import owned_sessions  # noqa: F401
+from tests.tui_gateway.owned_fixture import owned_sessions  # noqa: F401
 
 
 @pytest.mark.platforms("posix")
