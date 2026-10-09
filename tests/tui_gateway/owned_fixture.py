@@ -56,6 +56,7 @@ def owned_sessions(tmp_path, monkeypatch, request):
         "test_owned_inline_store_replacement_retires_approval",
         "test_owned_memory_mirror_route_change_retires_consent",
         "test_owned_memory_metadata_cannot_redirect_mirror_after_builtin_write",
+        "test_owned_holographic_mirror_cannot_redirect",
         "test_owned_memory_target_preserves_store_mirrors_and_replay",
         "test_owned_memory_reviewed_routes_cannot_be_substituted",
         "test_owned_pending_failure_never_applies_or_replays_memory",

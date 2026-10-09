@@ -115,6 +115,20 @@ class HolographicMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         return True  # SQLite is always available, numpy is optional
 
+    def identity_signature(self) -> Dict[str, Any]:
+        # Owned calls and built-in mirrors share this identity fence. The config
+        # path alone cannot detect replacement of an already opened destination.
+        def owner(store):
+            if store is None:
+                return None
+            return {"instance": id(store), "database": store._key,
+                    "connection": id(store._conn), "entry": id(store._entry)}
+
+        return {"configured_database": str(self._config.get("db_path", _DEFAULT_DB_PATH)),
+                "store": owner(self._store),
+                "retriever": None if self._retriever is None else {
+                    "instance": id(self._retriever), "store": owner(self._retriever.store)}}
+
     def save_config(self, values, hermes_home):
         """Write config to config.yaml under plugins.hermes-memory-store."""
         # The canonical writer: config lock, managed-mode refusal, default stripping, atomic replace.

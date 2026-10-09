@@ -34,3 +34,9 @@ Config in `config.yaml` under `plugins.hermes-memory-store`:
 |------|-------------|
 | `fact_store` | 9 actions: add, search, probe, related, reason, contradict, update, remove, list |
 | `fact_feedback` | Rate facts as helpful/unhelpful (trains trust scores) |
+
+## Owned route isolation
+
+The provider declares its opened SQLite store/connection and retrieval store through the existing memory-provider identity contract. An owned invocation retires when middleware replaces either destination; built-in memory mirrors use the same fence. Returning to the original route does not revive an observed retired approval, and duplicate requests return metadata without redispatch.
+
+The identity read is cheap and performs no database or filesystem I/O. An uninitialized provider declares only its configured destination and empty runtime owners. This protects route ownership, not fact revisions: review-to-commit CAS, multi-process transaction recovery, lifecycle extraction and external-account qualification remain separate requirements. A built-in write that finishes before a mirror route is retired may remain committed; the owned result is unknown and does not replay either write.
