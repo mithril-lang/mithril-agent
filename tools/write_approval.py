@@ -86,7 +86,11 @@ def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin
     if memory_route is not None:
         record["memory_route"] = dict(memory_route)
     try:
-        atomic_json_write(_pending_path(subsystem, pid), record)
+        from tools.write_approval_decisions import pending_decision_lock, decision_receipt
+        with pending_decision_lock(subsystem, pid):
+            if get_pending(subsystem, pid) is not None or decision_receipt(subsystem, pid) is not None:
+                raise OSError("Pending proposal identity already exists; nothing was overwritten.")
+            atomic_json_write(_pending_path(subsystem, pid), record)
     except Exception as e:
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
         raise OSError(f"Pending {subsystem} write {pid} persistence is not confirmed; "
@@ -124,10 +128,13 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
 def discard_pending(subsystem: str, pending_id: str) -> bool:
     """Delete a pending record. Returns True if it existed."""
     try:
-        path = _pending_path(subsystem, pending_id)
-        if path.exists():
-            path.unlink()
-            return True
+        from tools.write_approval_decisions import pending_decision_lock, decision_receipt
+        with pending_decision_lock(subsystem, pending_id) as path:
+            if decision_receipt(subsystem, pending_id) is not None:
+                return False  # Never discard another consumer's in-flight or uncertain effect.
+            if path.exists():
+                path.unlink()
+                return True
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False

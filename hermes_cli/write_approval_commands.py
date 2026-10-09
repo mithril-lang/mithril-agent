@@ -104,12 +104,17 @@ def _review_memory(rest: List[str]) -> str:
                            "remaining_count": max(0, len(records) - 100)}, ensure_ascii=False)
     if len(rest) != 1 or not re.fullmatch(r"[a-f0-9]{8}", rest[0]):
         return "Usage: /memory review <id>"
-    record = wa.get_pending(wa.MEMORY, rest[0])
-    if not record:
-        return f"No pending memory write with id '{rest[0]}'."
+    from tools.write_approval_decisions import pending_decision_lock, decision_receipt
     try:
-        return json.dumps({"protocol": "hermes-pending-memory-review-v1", "pending_id": rest[0], "review_digest": _review_digest(wa.MEMORY, record),
-                           "review": _memory_review_lines(record["payload"])}, ensure_ascii=False)
+        with pending_decision_lock(wa.MEMORY, rest[0]):
+            if decision_receipt(wa.MEMORY, rest[0]) is not None:
+                return "A previous decision is already recorded or its outcome is unknown; " \
+                       "inspect pending and saved data. Nothing was repeated."
+            record = wa.get_pending(wa.MEMORY, rest[0])
+            if not record:
+                return f"No pending memory write with id '{rest[0]}'."
+            return json.dumps({"protocol": "hermes-pending-memory-review-v1", "pending_id": rest[0], "review_digest": _review_digest(wa.MEMORY, record),
+                               "review": _memory_review_lines(record["payload"])}, ensure_ascii=False)
     except Exception:
         return "Pending memory review could not be confirmed; nothing was applied."
 
@@ -118,8 +123,9 @@ def _review_error(subsystem: str, rest: List[str], record: dict) -> Optional[str
     """Optional digest leaves existing one-argument CLI approval compatible.
 
     A remote human-review client must require the reviewed digest, never infer
-    consent from it. This comparison does not lock the pending file or attest a
-    concurrent filesystem writer; existing store-route/entry checks still apply.
+    consent from it. Decision callers hold the queue lock across this comparison,
+    claim, application and retirement. Store-route/entry checks still apply;
+    arbitrary filesystem writers and monotonic store data revisions are separate.
     """
     if subsystem != wa.MEMORY or len(rest) == 1:
         return None
@@ -150,15 +156,11 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
 
-    if subsystem == wa.MEMORY and len(rest) != 1:
-        if error := _review_error(subsystem, rest, targets[0]):
-            return error
-
     applied, failed, overwritten, removed = 0, [], [], []
     for rec in targets:
-        ok, msg, result = _apply_one(subsystem, rec, memory_store)
+        decision_args = rest if target.lower() != "all" else [rec["id"]]
+        ok, msg, result = _decide_one(subsystem, rec["id"], decision_args, "approve", memory_store)
         if ok:
-            wa.discard_pending(subsystem, rec["id"])
             applied += 1
             overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
             removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
@@ -214,24 +216,58 @@ def _apply_one(subsystem: str, rec, memory_store):
         return False, str(e), {}
 
 
+def _decide_one(subsystem: str, pending_id: str, rest: List[str], decision: str, memory_store=None):
+    """Compare and claim the current queue record under cross-process custody."""
+    from tools.write_approval_decisions import (
+        pending_decision_lock, decision_receipt, write_receipt, clear_failed_claim, finish_decision)
+    try:
+        with pending_decision_lock(subsystem, pending_id):
+            receipt = decision_receipt(subsystem, pending_id)
+            if receipt is not None:
+                return False, "A previous decision is already recorded or its outcome is unknown; " \
+                              "inspect pending and saved data. Nothing was repeated.", {}
+            rec = wa.get_pending(subsystem, pending_id)
+            if not rec:
+                return False, f"No pending {subsystem} write with id '{pending_id}'.", {}
+            if rec.get("id") != pending_id or rec.get("subsystem") != subsystem:
+                return False, "Pending proposal identity changed; nothing was applied.", {}
+            if error := _review_error(subsystem, rest, rec):
+                return False, error, {}
+            if decision == "approve" and subsystem == wa.MEMORY and memory_store is None:
+                return False, "memory store unavailable", {}
+            write_receipt(subsystem, rec, decision, "applying" if decision == "approve" else "rejecting")
+            if decision == "reject":
+                finish_decision(subsystem, rec, decision)
+                return True, "", {}
+            ok, message, result = _apply_one(subsystem, rec, memory_store)
+            if not ok:
+                if subsystem == wa.MEMORY and result:
+                    # Built-in memory validation failures explicitly report no write.
+                    clear_failed_claim(subsystem, pending_id)
+                    return False, message, result
+                write_receipt(subsystem, rec, decision, "unknown")
+                return False, "Pending decision outcome is unknown; inspect saved data. Nothing will be repeated.", {}
+            finish_decision(subsystem, rec, decision)
+            return True, "", result
+    except (OSError, ValueError):
+        return False, "Pending decision persistence could not be confirmed; inspect pending and saved data. " \
+                      "Nothing will be automatically repeated.", {}
+
+
 def _reject(subsystem: str, rest: List[str]) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
-    if subsystem == wa.MEMORY and len(rest) != 1:
-        if not re.fullmatch(r"[a-f0-9]{8}", target):
-            return "A reviewed memory decision must select one proposal."
-        record = wa.get_pending(subsystem, target)
-        if not record:
-            return f"No pending {subsystem} write with id '{target}'."
-        if error := _review_error(subsystem, rest, record):
-            return error
+    if subsystem == wa.MEMORY and len(rest) != 1 and not re.fullmatch(r"[a-f0-9]{8}", target):
+        return "A reviewed memory decision must select one proposal."
     if target.lower() == "all":
-        n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
-        return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
-        return f"Rejected pending {subsystem} write '{target}'."
-    return f"No pending {subsystem} write with id '{target}'."
+        results = [_decide_one(subsystem, rec["id"], [rec["id"]], "reject")
+                   for rec in wa.list_pending(subsystem)]
+        out = f"Rejected {sum(ok for ok, _, _ in results)} pending {subsystem} write(s)."
+        failures = [message for ok, message, _ in results if not ok]
+        return out + ("\nFailed:\n" + "\n".join(failures) if failures else "")
+    ok, message, _ = _decide_one(subsystem, target, rest, "reject")
+    return f"Rejected pending {subsystem} write '{target}'." if ok else message
 
 
 def _diff(rest: List[str]) -> str:
