@@ -1264,7 +1264,7 @@ def test_owned_effect_manifest_retires_profile_context_without_changing_prompt(o
     foreign = session_tool_snapshot(b)
     declarations = {m["name"]: m for m in original["effect_manifests"]}
     assert declarations["write_file"]["coverage"] == "partial"
-    assert declarations["todo_list"]["coverage"] == "unknown"
+    assert declarations["todo_list"]["coverage"] == "partial"
     prompt = copy.deepcopy(a["agent"].tools)
     home = Path(a["profile_home"])
     path = home / "manifest-write.txt"
@@ -2265,6 +2265,19 @@ def test_owned_memory_preserves_profile_prompt_and_replay(owned_sessions, target
         definitions = copy.deepcopy(agent.tools)
         history = copy.deepcopy(agent._session_messages)
         context = session_tool_snapshot(session)
+        declaration = next(row for row in context["effect_manifests"] if row["name"] == "memory")
+        assert declaration["coverage"] == "partial"
+        assert "memory.write" in declaration["effects"] and "memory.provider-notification" in declaration["effects"]
+        target_file = home / "memories" / filename
+        target_before = target_file.read_bytes() if target_file.exists() else None
+        preview = _target_preview(owned_sessions, owner, owner, "memory", {"target": target, "action": "add", "content": "unapproved"})
+        assert preview["result"]["target_binding"] is None
+        refused = _call(owned_sessions, owner, owner, "memory",
+                        {"target": target, "action": "add", "content": "unapproved"},
+                        f"memory-false-target-{visit}", target_digest="0" * 64)
+        assert refused["error"]["code"] == 4092
+        assert (foreign_file.read_bytes() if foreign_file.exists() else None) == foreign_before
+        assert (target_file.read_bytes() if target_file.exists() else None) == target_before
         content = f"{owner} owned memory visit {visit}"
         replacement = content + " revised"
         extra = content + " batch entry"

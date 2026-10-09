@@ -325,4 +325,6 @@ registry.register(
     name="todo_list", toolset="todo", schema=TODO_SCHEMA, check_fn=check_todo_requirements,
     handler=lambda args, **kw: todo_tool(
         todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
-    emoji="📋")
+    emoji="📋",
+    effect_manifest={"coverage": "partial", "effects": ["todo.read", "todo.write"], "targets": [
+        {"kind": "agent-todo-store", "argument": "/todos", "resolution": "selected-agent-inline-store"}]})
