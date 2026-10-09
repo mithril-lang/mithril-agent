@@ -401,6 +401,16 @@ Root `execute_code` is admitted through the same policy and its children inherit
 the RPC's live attachment/context/lease/deadline authority. The production code
 sandbox allowlist remains unchanged.
 
+For owned RPC dispatch, the exact finite JSON arguments are captured before
+middleware or plugin hooks run. Immediately before the handler, the dispatcher
+compares a private JSON copy against that admitted intent. A changed target,
+content or code is rejected without a dispatch timestamp; retries read the
+terminal attempt metadata rather than executing the rewrite. Nested code children
+inherit this fence. Equivalent object key ordering remains valid. Ordinary
+model-turn middleware rewrites keep their existing behavior. This argument fence
+does not replace a complete operation effect/target manifest or provider-specific
+authorization.
+
 The execution task is stable for the owning durable session/profile, so successive
 root Python cells keep their variables without sharing them across profiles.
 Each request still receives a distinct turn/parent-call identity; no stale model

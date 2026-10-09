@@ -100,6 +100,84 @@ def _call(sessions, caller, target, name, args, request, **changes):
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("stage", ["tool_request", "tool_execution", "pre_tool_call"])
+@pytest.mark.parametrize("tool", ["write_file", "execute_code"])
+def test_owned_middleware_cannot_change_exact_intent(owned_sessions, monkeypatch, stage, tool):
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    for visit, owner in enumerate(["a", "b", "a"]):
+        home = Path(owned_sessions[owner]["profile_home"])
+        approved, changed = home / f"approved-{visit}.txt", home / f"changed-{visit}.txt"
+        arguments = {"path": str(approved), "content": "approved payload"} if tool == "write_file" else {
+            "code": f"from hermes_tools import write_file\nprint(write_file({str(approved)!r}, 'approved payload'))"}
+
+        def rewrite(*, tool_name, args, next_call=None, **kwargs):
+            # In-place changes must also be fenced, including nested code children.
+            if tool_name == "write_file":
+                args.update(path=str(changed), content="unapproved payload")
+            if stage == "pre_tool_call":
+                return {"action": "modify", "args": args}
+            return {"args": args} if stage == "tool_request" else next_call(args)
+
+        if stage == "pre_tool_call":
+            manager._hooks[stage] = [rewrite]
+        else:
+            manager._middleware[stage] = [rewrite]
+        request = f"rewrite-{stage}-{tool}-{visit}"
+        result = _call(owned_sessions, owner, owner, tool, arguments, request)["result"]
+        assert not changed.exists() and not approved.exists(), result
+        if tool == "write_file":
+            assert result["state"] == "rejected" and result["observation"] == "policy-result", result
+            receipt = owned_sessions[owner]["agent"]._session_db.get_tool_attempt(
+                "same-durable-owner", result["attempt_id"])
+            assert receipt["dispatched_at"] is None
+        else:
+            assert "intent" in result["output"]["output"], result
+        replay = _call(owned_sessions, owner, owner, tool, arguments, request)["result"]
+        assert replay["duplicate"] and replay["observation"] == "metadata-only" and replay["output"] is None
+        assert not changed.exists() and not approved.exists()
+
+
+@pytest.mark.platforms("posix")
+def test_owned_middleware_equivalent_json_still_executes_once(owned_sessions, monkeypatch):
+    import tui_gateway.server as server
+    from agent.code_child_dispatch import bind_code_child_dispatch, resolve_code_child_dispatch
+    from agent.tool_executor import _ToolCallRef
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    manager._middleware["tool_execution"] = [
+        lambda *, args, next_call, **kwargs: next_call(dict(reversed(list(args.items()))))]
+    home = Path(owned_sessions["a"]["profile_home"])
+    path = home / "equivalent.txt"
+    arguments = {"path": str(path), "content": "same exact intent"}
+    result = _call(owned_sessions, "a", "a", "write_file", arguments, "equivalent")["result"]
+    assert result["state"] == "returned" and path.read_text() == "same exact intent", result
+    path.write_text("already delivered")
+    replay = _call(owned_sessions, "a", "a", "write_file", arguments, "equivalent")["result"]
+    assert replay["duplicate"] and replay["output"] is None
+    assert path.read_text() == "already delivered"
+
+    # Ordinary model-origin code children keep the existing rewrite feature.
+    model_path = home / "model-rewritten.txt"
+    manager._middleware["tool_execution"] = [lambda *, args, next_call, **kwargs:
+        next_call({**args, "path": str(model_path), "content": "model middleware payload"})]
+    session = owned_sessions["a"]
+    parent = _ToolCallRef("execute_code", {}, "model-task", "model-parent", [])
+    with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+        with bind_code_child_dispatch(session["agent"], parent):
+            output = json.loads(resolve_code_child_dispatch("model-task")("write_file", arguments))
+    assert "error" not in output, output
+    assert model_path.read_text() == "model middleware payload"
+    assert path.read_text() == "already delivered"
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("name", ["read_file", "write_file", "todo_list", "execute_code"])
 def test_owned_call_executes_once_and_replay_reads_metadata(owned_sessions, name):
     import tui_gateway.server as server

@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import json
 import threading
 import uuid
 
@@ -59,6 +60,7 @@ class _ParentDispatch:
         return self.schemas.rejection(name)
 
     def dispatch(self, task_id, name, args, *, call_id=None):
+        from agent.code_child_attempts import _digest
         from agent.tool_executor import (
             _ToolCallRef, _detect_tool_failure, _emit_tool_complete_and_risk,
             _run_agent_tool_execution_middleware,
@@ -71,6 +73,9 @@ class _ParentDispatch:
         if rejected:
             return tool_error(rejected)
         ref = _ToolCallRef(name, args, task_id, call_id or uuid.uuid4().hex, [])
+        # Owned RPC admission covers the caller's exact JSON, not a later
+        # middleware rewrite. Capture before callbacks can mutate args in place.
+        intent_digest = _digest(args)[0] if self.authority is not None else None
         self.attempts.begin(ref, self.parent)
         dispatched = rejected_before_dispatch = False
 
@@ -78,6 +83,15 @@ class _ParentDispatch:
             nonlocal dispatched, rejected_before_dispatch
             # Recheck after middleware/plugin/approval waits, immediately before effect.
             rejected = self.rejection(task_id, name)
+            if rejected is None and intent_digest is not None:
+                try:
+                    # Dispatch this private copy, so equality and the handler use
+                    # the same captured value even if a plugin retains its dict.
+                    final_args = json.loads(json.dumps(final_args, ensure_ascii=False, allow_nan=False))
+                    if _digest(final_args)[0] != intent_digest:
+                        rejected = "The owned tool intent changed after admission."
+                except (TypeError, ValueError, OverflowError, RecursionError):
+                    rejected = "The owned tool intent is no longer finite JSON."
             if rejected:
                 rejected_before_dispatch = True
                 return tool_error(rejected)
