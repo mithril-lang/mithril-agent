@@ -2,7 +2,7 @@
 
 
 def register_tool(ctx, name, toolset, schema, handler, check_fn=None, requires_env=None,
-                  is_async=False, description="", emoji="", override=False):
+                  is_async=False, description="", emoji="", override=False, *, effect_manifest=None):
     from hermes_cli.plugins import PluginToolOverrideError, logger
 
     if override and not ctx._tool_override_allowed(name):
@@ -21,7 +21,7 @@ def register_tool(ctx, name, toolset, schema, handler, check_fn=None, requires_e
     registry.register(
         name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
         requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-        override=override, scope=scope,
+        override=override, scope=scope, effect_manifest=effect_manifest,
     )
     registered = registry.snapshot_registration(name, scope=scope)
     handle = None

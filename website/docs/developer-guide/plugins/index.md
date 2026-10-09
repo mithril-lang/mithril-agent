@@ -1050,6 +1050,36 @@ ctx.register_tool(
 )
 ```
 
+### Partial effect and target declarations
+
+`ctx.register_tool(..., effect_manifest=...)` accepts the same optional,
+host-authored partial metadata as the registry:
+
+```python
+ctx.register_tool(
+    name="export_note", toolset="notes", schema=note_schema, handler=export_note,
+    effect_manifest={
+        "coverage": "partial",
+        "effects": ["file.write"],
+        "targets": [{"kind": "file-path", "argument": "/path",
+                     "resolution": "selected-terminal-runtime"}],
+    },
+)
+```
+
+The metadata is copied, limited to finite JSON and 8 KiB, and validated before
+registry/ownership ledger changes. It follows the same profile overlay and
+registration handle as the handler: reload replaces it, disposal restores an
+existing registration, and unload withdraws it. Malformed metadata fails plugin
+loading with normal cleanup. Existing plugins may omit it; their effects remain
+unknown rather than being inferred from tool names or MCP annotations.
+
+Owned runtime readback includes descriptors beside frozen model-visible schemas.
+Observed descriptor or registered-handler changes retire old approval context;
+model schemas/history are not rewritten. This declaration is not an execution
+grant, target resolver or complete effect audit. Operator override opt-in and
+provider/native readiness gates still apply.
+
 ### Overriding a built-in tool
 
 To replace a built-in tool with your own implementation (e.g. swap the

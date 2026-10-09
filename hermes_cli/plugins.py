@@ -458,6 +458,7 @@ class PluginContext:
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        *, effect_manifest: dict | None = None,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
@@ -472,7 +473,8 @@ class PluginContext:
 
         return register_tool(self, name, toolset, schema, handler, check_fn=check_fn,
                              requires_env=requires_env, is_async=is_async,
-                             description=description, emoji=emoji, override=override)
+                             description=description, emoji=emoji, override=override,
+                             effect_manifest=effect_manifest)
 
     # -- capability probing (#64228) -----------------------------------------
     def has_capability(self, capability: str) -> bool:

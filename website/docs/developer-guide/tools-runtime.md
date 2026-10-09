@@ -440,7 +440,8 @@ operation still need their own effect admission and live qualification evidence.
 
 ### Effect manifest readback and invalidation
 
-`registry.register(effect_manifest=...)` accepts bounded, finite, host-authored
+`registry.register(effect_manifest=...)` and the optional keyword-only
+`PluginContext.register_tool(effect_manifest=...)` accept bounded, finite, host-authored
 partial declarations alongside the schema and handler. The descriptor contains
 `coverage: "partial"`, effect names and target descriptors (`kind`, an argument
 JSON pointer, and a resolution label). Registration copies the value, rejects
