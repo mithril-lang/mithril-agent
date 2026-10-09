@@ -96,13 +96,19 @@ def _review_digest(subsystem: str, record: dict) -> str:
 
 
 def _review_memory(rest: List[str]) -> str:
+    if not rest:
+        records = [r for r in wa.list_pending(wa.MEMORY)
+                   if isinstance(r.get("id"), str) and re.fullmatch(r"[a-f0-9]{8}", r["id"])]
+        return json.dumps({"protocol": "hermes-pending-memory-review-v1", "pending": [{"pending_id": r["id"], "summary": str(r.get("summary", ""))[:120]}
+                                        for r in records[:100]],
+                           "remaining_count": max(0, len(records) - 100)}, ensure_ascii=False)
     if len(rest) != 1 or not re.fullmatch(r"[a-f0-9]{8}", rest[0]):
         return "Usage: /memory review <id>"
     record = wa.get_pending(wa.MEMORY, rest[0])
     if not record:
         return f"No pending memory write with id '{rest[0]}'."
     try:
-        return json.dumps({"pending_id": rest[0], "review_digest": _review_digest(wa.MEMORY, record),
+        return json.dumps({"protocol": "hermes-pending-memory-review-v1", "pending_id": rest[0], "review_digest": _review_digest(wa.MEMORY, record),
                            "review": _memory_review_lines(record["payload"])}, ensure_ascii=False)
     except Exception:
         return "Pending memory review could not be confirmed; nothing was applied."

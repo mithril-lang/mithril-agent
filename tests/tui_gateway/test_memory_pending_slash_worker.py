@@ -13,6 +13,28 @@ from pathlib import Path
 import pytest
 
 
+def test_memory_review_queue_is_bounded_and_profile_local(tmp_path):
+    from tools import write_approval as wa
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tui_gateway.server import _session_profile_runtime_scope
+
+    sessions = {owner: {"profile_home": str(tmp_path / owner)} for owner in ("a", "b")}
+    ids = {}
+    for owner, session in sessions.items():
+        Path(session["profile_home"]).mkdir()
+        with _session_profile_runtime_scope(session, hydrate_secrets=False):
+            ids[owner] = [wa.stage_write(wa.MEMORY, {"action": "add", "content": "queued"},
+                         summary="🧠" * 130, origin="foreground")["id"] for _ in range(101 if owner == "a" else 1)]
+    for owner in ("a", "b", "a"):
+        with _session_profile_runtime_scope(sessions[owner], hydrate_secrets=False):
+            page = json.loads(handle_pending_subcommand(wa.MEMORY, ["review"]))
+            assert page["protocol"] == "hermes-pending-memory-review-v1"
+            assert [row["pending_id"] for row in page["pending"]] == ids[owner][:100]
+            assert page["remaining_count"] == (1 if owner == "a" else 0)
+            assert all(len(row["summary"]) == 120 for row in page["pending"])
+            assert len(wa.list_pending(wa.MEMORY)) == len(ids[owner])
+
+
 @pytest.mark.parametrize("target", ["memory", "user"])
 @pytest.mark.parametrize("action", ["add", "replace", "remove", "batch"])
 @pytest.mark.platforms("posix")
@@ -53,6 +75,8 @@ def test_persistent_slash_workers_keep_pending_memory_custody(tmp_path, monkeypa
                 workers[owner] = _SlashWorker("same-durable-owner", "qualification-no-inference",
                                               profile_home=str(home), provider="custom")
             assert "No pending memory writes" in workers[owner].run("/memory pending")
+            assert json.loads(workers[owner].run("/memory review")) == {
+                "protocol": "hermes-pending-memory-review-v1", "pending": [], "remaining_count": 0}
 
         expected = {owner: [f"initial-{owner}", f"spare-{owner}"] for owner in sessions}
         for visit, owner in enumerate(("a", "b", "a")):
@@ -83,6 +107,8 @@ def test_persistent_slash_workers_keep_pending_memory_custody(tmp_path, monkeypa
                 record = wa.get_pending(wa.MEMORY, pending_id)
                 assert load_on_disk_store()._entries_for(target) == expected[owner]
             listing = workers[owner].run("/memory pending")
+            queue = json.loads(workers[owner].run("/memory review"))
+            assert queue["remaining_count"] == 0 and [row["pending_id"] for row in queue["pending"]] == [pending_id]
             assert pending_id in listing
             assert filename in listing
             if action != "remove":
