@@ -146,6 +146,15 @@ class MemoryProvider(ABC):
         """Handle one of this provider's tools; must return a JSON string."""
         raise NotImplementedError(f"Provider {self.name} does not handle tool {tool_name}")
 
+    def get_tool_effect_manifests(self) -> Dict[str, Any]:
+        """Optional partial effect/argument-pointer descriptions keyed by tool name.
+
+        Read-only and cheap: no initialization, availability probes or network I/O.
+        Missing declarations stay unknown. They never grant effects or resolve a
+        target; owned hosts bind them to the selected provider execution identity.
+        """
+        return {}
+
     def shutdown(self) -> None:
         """Clean shutdown — flush queues, close connections."""
 

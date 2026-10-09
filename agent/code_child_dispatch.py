@@ -86,7 +86,8 @@ class _ParentDispatch:
         # middleware rewrite. Capture before callbacks can mutate args in place.
         intent_digest = _digest(args)[0] if self.authority is not None else None
         from agent.owned_target_binding import OwnedTargetBinding
-        target_binding = (OwnedTargetBinding(self.schemas.registrations[name], args, task_id)
+        target_registration = None if self.schemas.inline[name].owns_effects else self.schemas.registrations[name]
+        target_binding = (OwnedTargetBinding(target_registration, args, task_id)
                           if self.authority is not None else None)
         self.attempts.begin(ref, self.parent, target_digest=target_digest)
         dispatched = rejected_before_dispatch = False

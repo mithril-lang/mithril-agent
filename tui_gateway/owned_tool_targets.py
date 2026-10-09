@@ -30,6 +30,9 @@ def owned_target_binding(session, snapshot, name, args, task):
     if len(encoded.encode("utf-8")) > 2 * 1024 * 1024:
         raise ValueError("target arguments exceed owned limit")
     args = json.loads(encoded)
+    inline = next(row for row in session["_tool_snapshot_inline_bindings"] if row.name == name)
+    if inline.owns_effects:
+        return None
     registration = next(row for row in session["_tool_snapshot_registration_bindings"] if row.name == name)
     if registration.target_resolver is None:
         return None

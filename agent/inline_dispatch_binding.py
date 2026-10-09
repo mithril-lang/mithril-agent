@@ -46,10 +46,14 @@ def _read_target(agent, attribute):
     return getattr(agent, attribute, None)
 
 
-def memory_provider_identity(provider):
+def memory_provider_identity(provider, *, effects=None):
     """One private, bounded declared identity for mirror and provider-owned routes."""
     signature = getattr(provider, "identity_signature", None)
-    encoded = json.dumps(signature() if signature else {}, sort_keys=True, allow_nan=False).encode()
+    from agent.memory_provider_effects import declared_memory_effects
+
+    encoded = json.dumps({"identity": signature() if signature else {},
+                          "effects": declared_memory_effects(provider) if effects is None else effects},
+                         sort_keys=True, allow_nan=False).encode()
     if len(encoded) > 128 * 1024:
         raise ValueError("memory provider identity exceeds owned limit")
     return (id(provider), provider.name, hashlib.sha256(encoded).hexdigest())
@@ -88,6 +92,18 @@ class InlineDispatchBinding:
 
         self.agent, self.name, self.home = agent, name, hermes_home_key()
         self.executor, self.identity = select_invoke_tool_executor(agent, name)
+        # Inline-owned names must not borrow a same-name registry handler's
+        # effects or target resolver. Built-in inline tools retain registry metadata.
+        self.owns_effects = self.identity[0] in {"memory", "memory-manager", "context"}
+        self.effect_manifest = None
+        if self.identity[0] == "memory":
+            from agent.memory_provider_effects import declared_memory_effects
+
+            provider, _, _ = agent._memory_manager.resolve_tool_dispatch(name)
+            effects = declared_memory_effects(provider)
+            if memory_provider_identity(provider, effects=effects) != self.identity[2]:
+                raise ValueError("Memory provider changed during effect capture")
+            self.effect_manifest = effects.get(name)
 
     def matches(self):
         from agent.inline_tool_executors import select_invoke_tool_executor

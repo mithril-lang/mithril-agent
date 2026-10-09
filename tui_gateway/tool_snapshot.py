@@ -107,7 +107,9 @@ def session_tool_snapshot(session: dict | None) -> dict:
 
     try:
         with _session_profile_runtime_scope(session, hydrate_secrets=False):
-            manifests, bindings = runtime_effect_snapshot(definitions)
+            inline_bindings = tuple(InlineDispatchBinding(agent, name) for name in
+                                    [d["function"]["name"] for d in definitions])
+            manifests, bindings = runtime_effect_snapshot(definitions, inline_bindings=inline_bindings)
             from tools.dispatch_binding import capture_dispatch_binding
             from tools.registry import registry
 
@@ -117,8 +119,7 @@ def session_tool_snapshot(session: dict | None) -> dict:
             # Registry metadata alone does not identify agent-owned stores,
             # callbacks, context engines or external memory-provider routes.
             # Keep captures private so target replacement retires old consent.
-            inline_bindings = tuple(InlineDispatchBinding(agent, name) for name in
-                                    [d["function"]["name"] for d in definitions] + list(deferred_names))
+            inline_bindings += tuple(InlineDispatchBinding(agent, name) for name in deferred_names)
         manifest_encoded = json.dumps(manifests, ensure_ascii=False, sort_keys=True,
                                       separators=(",", ":"), allow_nan=False).encode("utf-8")
         manifest_identity = hashlib.sha256(manifest_encoded).hexdigest()

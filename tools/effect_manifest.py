@@ -33,10 +33,12 @@ def copy_effect_manifest(value):
     return result
 
 
-def runtime_effect_snapshot(definitions):
+def runtime_effect_snapshot(definitions, *, inline_bindings=()):
     """Capture descriptors and private registrations atomically in the current profile."""
     from tools.dispatch_binding import capture_dispatch_binding
     from tools.registry import registry
+
+    inline = {binding.name: binding for binding in inline_bindings}
 
     with registry._lock:
         result = []
@@ -44,7 +46,9 @@ def runtime_effect_snapshot(definitions):
         for definition in definitions:
             name = definition["function"]["name"]
             entry = registry.get_entry(name)
-            result.append({"name": name, **copy_effect_manifest(
-                getattr(entry, "effect_manifest", None))})
+            selected = inline.get(name)
+            manifest = (selected.effect_manifest if selected is not None and selected.owns_effects
+                        else getattr(entry, "effect_manifest", None))
+            result.append({"name": name, **copy_effect_manifest(manifest)})
             bindings.append(capture_dispatch_binding(registry, name))
         return result, tuple(bindings)

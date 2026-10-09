@@ -190,6 +190,18 @@ class HolographicMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
 
+    def get_tool_effect_manifests(self) -> Dict[str, Any]:
+        # fact_store is one frozen tool covering both recall and CRUD. Describe
+        # that union; the exact action/arguments remain pinned by owned custody.
+        return {
+            "fact_store": {"coverage": "partial", "effects": ["memory.read", "memory.write"],
+                           "targets": [{"kind": "provider-memory", "argument": "/action",
+                                        "resolution": "selected-provider-operation"}]},
+            "fact_feedback": {"coverage": "partial", "effects": ["memory.read", "memory.write"],
+                              "targets": [{"kind": "provider-fact", "argument": "/fact_id",
+                                           "resolution": "selected-provider-fact-id"}]},
+        }
+
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if tool_name not in self._TOOL_HANDLERS:
             return tool_error(f"Unknown tool: {tool_name}")

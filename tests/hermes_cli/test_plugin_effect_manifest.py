@@ -3,7 +3,7 @@
 import copy
 import json
 from pathlib import Path
-from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -43,6 +43,7 @@ def test_discovered_plugin_manifest_profile_dispatch_reload_and_unload(tmp_path,
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry
     from tui_gateway.tool_snapshot import session_tool_snapshot
+    from run_agent import AIAgent
 
     _isolate(monkeypatch, tmp_path)
     sessions, managers = {}, {}
@@ -56,8 +57,15 @@ def test_discovered_plugin_manifest_profile_dispatch_reload_and_unload(tmp_path,
             manager.discover_and_load()
             entry = registry.get_entry("manifest_probe_write")
             assert entry is not None, manager._plugins
-            session["agent"] = SimpleNamespace(session_id="plugin-manifest-owner",
-                tools=[{"type": "function", "function": copy.deepcopy(entry.schema)}])
+            definitions = [{"type": "function", "function": copy.deepcopy(entry.schema)}]
+            with (patch("model_tools.get_tool_definitions", return_value=definitions),
+                  patch("model_tools.check_toolset_requirements", return_value={}),
+                  patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+                  patch("agent.process_bootstrap.OpenAI"),
+                  patch("agent.model_metadata.fetch_model_metadata", return_value={})):
+                session["agent"] = AIAgent(api_key="test-key", base_url="https://example.invalid",
+                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+            session["agent"].session_id = "plugin-manifest-owner"
             module = manager._plugins["manifest_probe"].module
             module.MANIFEST["effects"].append("caller-mutation")
             assert entry.effect_manifest["effects"] == ["file.write"]
@@ -106,6 +114,7 @@ def test_discovered_plugin_manifest_profile_dispatch_reload_and_unload(tmp_path,
         for owner, manager in managers.items():
             with server._session_profile_runtime_scope(sessions[owner], hydrate_secrets=False):
                 manager.unload("manifest_probe")
+                sessions[owner]["agent"].close()
 
 
 def test_invalid_plugin_manifest_load_fails_without_registry_or_ledger_residue(tmp_path, monkeypatch):

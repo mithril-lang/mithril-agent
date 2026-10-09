@@ -7,7 +7,7 @@ from agent.code_child_attempts import _digest
 
 class OwnedTargetBinding:
     def __init__(self, registration, args, task_id):
-        self.resolver = registration.target_resolver
+        self.resolver = registration.target_resolver if registration is not None else None
         self.admission_error = False
         try:
             self.digest = self._resolve(args, task_id)
