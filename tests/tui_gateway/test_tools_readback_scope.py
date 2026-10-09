@@ -158,7 +158,8 @@ def test_rpc_snapshot_tracks_published_schemas_and_owned_agent_generation(two_ho
             definitions = model_tools.get_tool_definitions(
                 enabled_toolsets=enabled, quiet_mode=True)
         session["agent"] = SimpleNamespace(tools=definitions, enabled_toolsets=enabled,
-                                           disabled_toolsets=None, _tool_snapshot_generation=7)
+                                           disabled_toolsets=None, _tool_snapshot_generation=7,
+                                           _memory_manager=None)
 
     def snapshot(sid):
         token = server.bind_transport(two_homes[sid]["transport"])

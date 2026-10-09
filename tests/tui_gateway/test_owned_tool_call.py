@@ -152,6 +152,15 @@ def owned_sessions(tmp_path, monkeypatch, request):
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     sessions = {}
     names = ["read_file", "write_file", "todo_list", "execute_code"]
+    inline_state = getattr(request.node, "originalname", None) in {
+        "test_owned_memory_preserves_profile_prompt_and_replay",
+        "test_owned_session_search_uses_attached_durable_store",
+        "test_owned_inline_store_replacement_retires_approval",
+    }
+    if inline_state:
+        import tools.memory_tool  # noqa: F401
+        import tools.session_search_tool  # noqa: F401
+        names += ["memory", "session_search"]
     if request.node.name == "test_owned_runtime_generation_shared_by_file_terminal_and_remote_code_resolver":
         names.append("terminal")
     definitions = [{"type": "function", "function": copy.deepcopy(registry.get_entry(name).schema)} for name in names]
@@ -181,7 +190,8 @@ def owned_sessions(tmp_path, monkeypatch, request):
                   patch("agent.process_bootstrap.OpenAI"),
                   patch("agent.model_metadata.fetch_model_metadata", return_value={})):
                 agent = AIAgent(api_key="test-key", base_url="https://example.invalid",
-                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+                    quiet_mode=True, skip_context_files=True, skip_memory=True,
+                    enabled_toolsets=["memory"] if inline_state else None)
             db = SessionDB(db_path=home / "state.db")
             db.create_session(session_id="same-durable-owner", source="test", model="test")
             agent.session_id, agent._session_db = "same-durable-owner", db
@@ -1495,3 +1505,125 @@ def test_owned_policy_generation_retires_python_namespace_without_other_profile_
             with server._session_profile_runtime_scope(session, hydrate_secrets=False):
                 shutdown_kernels_for_owner(session["agent"].session_id)
                 shutdown_remote_kernels_for_owner(session["agent"].session_id)
+
+
+@pytest.mark.parametrize("target,filename", [("memory", "MEMORY.md"), ("user", "USER.md")])
+def test_owned_memory_preserves_profile_prompt_and_replay(owned_sessions, target, filename):
+    # Actual inline executor, agent-owned MemoryStore, profile files and durable
+    # RPC attempt journal. No external memory provider or model request.
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+
+    frozen = {}
+    for owner, session in owned_sessions.items():
+        store = session["agent"]._memory_store
+        assert store is not None
+        frozen[owner] = store.format_for_system_prompt(target)
+    for visit, owner in enumerate(["a", "b", "a"]):
+        session = owned_sessions[owner]
+        agent = session["agent"]
+        home = Path(session["profile_home"])
+        foreign = owned_sessions["b" if owner == "a" else "a"]
+        foreign_file = Path(foreign["profile_home"]) / "memories" / filename
+        foreign_before = foreign_file.read_bytes() if foreign_file.exists() else None
+        definitions = copy.deepcopy(agent.tools)
+        history = copy.deepcopy(agent._session_messages)
+        context = session_tool_snapshot(session)
+        content = f"{owner} owned memory visit {visit}"
+        replacement = content + " revised"
+        extra = content + " batch entry"
+        operations = [
+            {"action": "add", "content": content},
+            {"action": "replace", "old_text": content, "content": replacement},
+            {"operations": [{"action": "add", "content": extra},
+                            {"action": "replace", "old_text": replacement, "content": content + " final"}]},
+            {"action": "remove", "old_text": content + " final"},
+        ]
+        for step, args in enumerate(operations):
+            request_id = f"memory-{target}-{visit}-{step}"
+            reply = _call(owned_sessions, owner, owner, "memory", {"target": target, **args}, request_id)
+            assert "result" in reply, reply
+            result = reply["result"]
+            assert result["state"] == "returned" and result["observation"] == "handler-return", result
+            assert result["output"]["success"] and result["terminal"], result
+        path = home / "memories" / filename
+        saved = path.read_bytes()
+        assert extra.encode() in saved and replacement.encode() not in saved
+        replay = _call(owned_sessions, owner, owner, "memory",
+                       {"target": target, **operations[0]}, f"memory-{target}-{visit}-0")["result"]
+        assert replay["duplicate"] and replay["output"] is None and replay["observation"] == "metadata-only"
+        assert path.read_bytes() == saved
+        assert (foreign_file.read_bytes() if foreign_file.exists() else None) == foreign_before
+        assert agent._memory_store.format_for_system_prompt(target) == frozen[owner]
+        assert agent.tools == definitions and agent._session_messages == history
+        fresh = session_tool_snapshot(session)
+        assert (fresh["context_id"], fresh["revision"]) == (context["context_id"], context["revision"])
+        denied = _call(owned_sessions, "b" if owner == "a" else "a", owner,
+                       "memory", {"target": target, "action": "add", "content": "foreign refused"},
+                       f"foreign-memory-{visit}")
+        assert denied["error"]["code"] == 4001
+        assert path.read_bytes() == saved
+
+
+def test_owned_session_search_uses_attached_durable_store(owned_sessions):
+    # Equal archive/session IDs in distinct on-disk profiles must resolve to
+    # the attached agent's DB, without editing either conversation's history.
+    for owner, session in owned_sessions.items():
+        db = session["agent"]._session_db
+        db.create_session(session_id="same-archive", source="cli", model="fixture")
+        db.append_message("same-archive", "user", f"archive owned only by {owner}")
+    for visit, owner in enumerate(["a", "b", "a"]):
+        session = owned_sessions[owner]
+        agent = session["agent"]
+        history = copy.deepcopy(agent._session_messages)
+        archives = {key: value["agent"]._session_db.get_messages("same-archive")
+                    for key, value in owned_sessions.items()}
+        args = {"session_id": "same-archive"}
+        request_id = f"recall-{visit}"
+        reply = _call(owned_sessions, owner, owner, "session_search", args, request_id)
+        assert "result" in reply, reply
+        result = reply["result"]
+        assert result["state"] == "returned" and result["observation"] == "handler-return", result
+        assert result["output"]["success"], result
+        output = json.dumps(result["output"])
+        assert f"archive owned only by {owner}" in output
+        assert f"archive owned only by {'b' if owner == 'a' else 'a'}" not in output
+        replay = _call(owned_sessions, owner, owner, "session_search", args, request_id)["result"]
+        assert replay["duplicate"] and replay["output"] is None and replay["observation"] == "metadata-only"
+        assert agent._session_messages == history
+        assert {key: value["agent"]._session_db.get_messages("same-archive")
+                for key, value in owned_sessions.items()} == archives
+
+
+@pytest.mark.parametrize("name,attribute", [("todo_list", "_todo_store"), ("memory", "_memory_store")])
+def test_owned_inline_store_replacement_retires_approval(owned_sessions, monkeypatch, name, attribute):
+    from tools.todo_tool import TodoStore
+    from tools.memory_tool import MemoryStore
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+
+    a, b = owned_sessions["a"], owned_sessions["b"]
+    approved = session_tool_snapshot(a)
+    foreign = session_tool_snapshot(b)
+    original = getattr(a["agent"], attribute)
+    replacement = TodoStore() if name == "todo_list" else MemoryStore()
+    monkeypatch.setattr(a["agent"], attribute, replacement)
+    args = ({"todos": [{"id": "1", "content": "must not reach replacement", "status": "pending"}]}
+            if name == "todo_list" else {"action": "add", "content": "must not reach replacement"})
+    reply = _call(owned_sessions, "a", "a", name, args, "stale-inline-store",
+                  context_id=approved["context_id"], revision=approved["revision"])
+    if name == "todo_list":
+        assert replacement.read() == [] and original.read() == [], reply
+    else:
+        assert replacement.memory_entries == [] and original.memory_entries == [], reply
+        assert not (Path(a["profile_home"]) / "memories" / "MEMORY.md").exists()
+    assert "error" in reply and reply["error"]["code"] == 4092, reply
+    assert a["agent"]._session_db.get_tool_attempt("same-durable-owner", "rpc:stale-inline-store") is None
+    changed = session_tool_snapshot(a)
+    assert changed["context_id"] != approved["context_id"]
+    assert changed["definitions"] == approved["definitions"]
+    assert changed["revision"] == approved["revision"]
+    assert session_tool_snapshot(b) == foreign
+    monkeypatch.setattr(a["agent"], attribute, original)
+    restored = session_tool_snapshot(a)
+    assert restored["context_id"] not in {approved["context_id"], changed["context_id"]}
+    assert restored["definitions"] == approved["definitions"]
+    assert session_tool_snapshot(b) == foreign

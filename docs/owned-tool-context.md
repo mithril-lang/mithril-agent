@@ -56,3 +56,36 @@ The optional qualification evidence output now preserves partial stdout/stderr w
 The network qualifier now selects Web WASM, native main consent and Desktop WASM as three independent function groups, each with the existing 210-second subprocess bound. The Web and native functions share a source file but no longer share one wait budget. Execution remains serial against one frozen-owner fixture, all enabled markers/attempts/history assertions remain required, and no human grant or tool deadline is extended. Real child regressions compare coalesced and separate function budgets.
 
 When actual Desktop Chat qualification is enabled, its independent function runs first, followed by Web and native main. This reaches the unresolved Electron/Python boundary even if the later Web family times out. All eight Desktop, eight Web and three native markers, fourteen returned attempts, foreign-profile isolation and unchanged history remain mandatory for whole-path success. Each function keeps its 210-second bound; no grant/interpreter deadline is extended. A failed early family remains a failed whole run.
+
+
+## Agent-owned inline execution owners
+
+Owned discovery now captures both registry registrations and the existing
+InlineDispatchBinding for each frozen model-visible definition in the selected
+profile. Those captures remain private: schemas, effect manifests and revision
+bytes do not acquire handler, store, callback or provider objects. Changing an
+inline execution owner retires context even when its public schema and effect
+description are identical. Observing an owner A -> B -> A cannot restore the
+original grant. Mutation of the same store's data does not change its owner.
+
+The regression first reproduced a stale todo context writing into a replacement
+TodoStore. After the change, todo and built-in memory store replacement reject
+that old context before an attempt claim, leave both stores unchanged, preserve
+the other profile, and require a fresh context after restoration. The same
+private binding machinery selects GUI callbacks, context engines and external
+memory-provider routes; those real provider/GUI operations still need separate
+qualification.
+
+Additional real owned RPC tests cover memory add/replace/remove/batch for both
+MEMORY.md and USER.md in two temporary profiles visited A -> B -> A. Files and
+durable receipts change once; duplicate requests read metadata only, another
+transport is refused, frozen prompt snapshots/schemas/history stay unchanged,
+and the other profile's file is unchanged. Session search reads the attached
+agent's real SQLite archive despite equal archive IDs in both profiles, without
+editing either archive/history or replaying the handler on duplicate lookup.
+Model/provider construction is a fixture; no external memory provider is called.
+These backend qualifications do not establish current Web/Electron screens,
+all effect/target declarations, whole boot, public or installed behavior.
+The previous whole nineteen-case run belongs to the earlier runtime; this
+runtime change requires fresh consumer qualification. An earlier related run
+passed twenty-two cases but had an ENOSPC setup error and remains a failed run.
