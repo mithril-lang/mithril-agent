@@ -39,6 +39,8 @@ def owned_sessions(tmp_path, monkeypatch, request):
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     sessions = {}
     names = ["read_file", "write_file", "todo_list", "execute_code"]
+    if request.node.name == "test_owned_runtime_generation_shared_by_file_terminal_and_remote_code_resolver":
+        names.append("terminal")
     definitions = [{"type": "function", "function": copy.deepcopy(registry.get_entry(name).schema)} for name in names]
     collision_fixture = request.node.name == "test_real_browser_api_owned_hermes_network"
     if collision_fixture:
@@ -828,3 +830,84 @@ def test_owned_terminal_policy_change_during_approval_never_dispatches(owned_ses
     replay = _call(owned_sessions, "a", "a", "write_file", arguments, "changed-approval-policy")
     assert replay["result"]["duplicate"] and replay["result"]["observation"] == "metadata-only"
     assert not target.exists() and len(db.list_tool_attempts(agent.session_id)["attempts"]) == 1
+
+
+def test_owned_runtime_generation_shared_by_file_terminal_and_remote_code_resolver(owned_sessions):
+    import tui_gateway.server as server
+    from tools.code_execution_tool import _get_or_create_env
+    from tools.file_tools import _get_file_ops
+    from tools.terminal_tool import _acquire_env, _plan_execution
+
+    session = owned_sessions["a"]
+    home = Path(session["profile_home"])
+    config = home / "config.yaml"
+    original = config.read_text()
+    (home / "runtime.txt").write_text("real runtime file")
+    environments = []
+    for visit, suffix in enumerate(["", "terminal:\n  timeout: 181\n", ""]):
+        config.write_text(original + suffix)
+        read = _call(owned_sessions, "a", "a", "read_file", {"path": "runtime.txt"}, f"runtime-read-{visit}")
+        assert read["result"]["state"] == "returned", read
+        terminal = _call(owned_sessions, "a", "a", "terminal", {"command": "printf owned-runtime"}, f"runtime-terminal-{visit}")
+        assert terminal["result"]["state"] == "returned", terminal
+        assert "owned-runtime" in json.dumps(terminal["result"]["output"])
+        with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+            context = server._set_session_context(session["agent"].session_id, ui_session_id="a")
+            try:
+                task = "tool-only:same-durable-owner"
+                file_env = _get_file_ops(task).env
+                plan = _plan_execution("printf owned-runtime", task_id=task, timeout=None, background=False, _host_local=False)
+                terminal_env = _acquire_env(plan, task)
+                code_env, backend = _get_or_create_env(task)
+                assert file_env is terminal_env is code_env and backend == "local"
+                environments.append(file_env)
+            finally:
+                server._clear_session_context(context)
+    assert len({id(env) for env in environments}) == 3
+    assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("kind", ["local", "file-rpc"])
+def test_owned_policy_generation_retires_python_namespace_without_other_profile_reset(owned_sessions, monkeypatch, kind):
+    import sys
+    from tools.environments.local import LocalEnvironment
+    from tools import terminal_tool_backends
+
+    initial = {owner: (Path(session["profile_home"]) / "config.yaml").read_text()
+               for owner, session in owned_sessions.items()}
+    if kind == "file-rpc":
+        create = terminal_tool_backends._create_environment
+
+        def local_transport(*args, **kwargs):
+            if kwargs.get("env_type") == "ssh":
+                # Actual local shell/process/file transport, never SSH credentials/network.
+                return LocalEnvironment(cwd=kwargs["cwd"], timeout=kwargs["timeout"],
+                    env={"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "LANG": "C.UTF-8"})
+            return create(*args, **kwargs)
+
+        monkeypatch.setattr(terminal_tool_backends, "_create_environment", local_transport)
+    try:
+        for owner in ["a", "b"]:
+            reply = _call(owned_sessions, owner, owner, "execute_code", {"code": f"runtime_generation_marker = {owner!r}\nprint(runtime_generation_marker)"}, f"kernel-warm-{owner}")
+            assert reply["result"]["state"] == "returned", reply
+        config = Path(owned_sessions["a"]["profile_home"]) / "config.yaml"
+        original = initial["a"]
+        changes = ([original + f"terminal:\n  backend: ssh\n  ssh_host: example.invalid\n  timeout: {timeout}\n"
+                    for timeout in [181, 182]] if kind == "file-rpc" else [original + "terminal:\n  timeout: 181\n"])
+        for visit, policy in enumerate([*changes, original]):
+            config.write_text(policy)
+            reply = _call(owned_sessions, "a", "a", "execute_code", {"code": "print(globals().get('runtime_generation_marker', 'fresh-runtime'))\nruntime_generation_marker = 'retired-generation'"}, f"kernel-policy-{visit}")
+            assert reply["result"]["state"] == "returned", reply
+            assert "fresh-runtime" in reply["result"]["output"]["output"], reply
+            foreign = _call(owned_sessions, "b", "b", "execute_code", {"code": "print(runtime_generation_marker)"}, f"kernel-foreign-{visit}")
+            assert foreign["result"]["state"] == "returned" and foreign["result"]["output"]["output"].strip() == "b", foreign
+
+    finally:
+        import tui_gateway.server as server
+        from tools.code_kernel import shutdown_kernels_for_owner
+        from tools.code_kernel_remote import shutdown_remote_kernels_for_owner
+        for session in owned_sessions.values():
+            with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+                shutdown_kernels_for_owner(session["agent"].session_id)
+                shutdown_remote_kernels_for_owner(session["agent"].session_id)

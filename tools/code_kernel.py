@@ -862,6 +862,10 @@ def execute_in_session_kernel(
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
     from hermes_constants import hermes_home_key
     key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, hermes_home_key(), tuple(sorted(sandbox_tools)))
+    from tools.terminal_tool import resolve_task_overrides
+    runtime_context = resolve_task_overrides(task_id).get("_owned_runtime_context")
+    if runtime_context:
+        key += (runtime_context,)
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())

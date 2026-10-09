@@ -156,7 +156,10 @@ class RemoteKernel:
 def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: frozenset) -> Tuple:
     """The hermes_tools stub module is generated from ``sandbox_tools`` once, at spawn, so a kernel
     is only reusable by calls with the SAME tool set; a different set gets its own kernel."""
-    return (owner, "remote", env_type, task_env_id, hermes_home_key(), tuple(sorted(sandbox_tools)))
+    key = (owner, "remote", env_type, task_env_id, hermes_home_key(), tuple(sorted(sandbox_tools)))
+    from tools.terminal_tool import resolve_task_overrides
+    runtime_context = resolve_task_overrides(task_env_id).get("_owned_runtime_context")
+    return key + (runtime_context,) if runtime_context else key
 
 
 # Registry + lock shared-shape with code_kernel; teardown runs outside the lock.

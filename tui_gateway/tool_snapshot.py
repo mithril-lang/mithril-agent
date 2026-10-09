@@ -60,10 +60,12 @@ def session_tool_snapshot(session: dict | None) -> dict:
             raise ValueError("invalid owned working directory context")
         # Targets and execution settings can change without rebuilding frozen
         # schemas. Any observed change retires grants, including A -> B -> A.
-        if (session.get("_tool_snapshot_agent") is not agent
-                or session.get("_tool_snapshot_home") != home
-                or session.get("_tool_snapshot_cwd") != cwd
-                or session.get("_tool_snapshot_terminal_policy") != policy):
+        runtime_changed = (session.get("_tool_snapshot_agent") is not agent
+                           or session.get("_tool_snapshot_home") != home
+                           or session.get("_tool_snapshot_terminal_policy") != policy)
+        if runtime_changed:
+            session["_tool_snapshot_runtime_context"] = uuid.uuid4().hex
+        if runtime_changed or session.get("_tool_snapshot_cwd") != cwd:
             session["_tool_snapshot_agent"] = agent
             session["_tool_snapshot_home"] = home
             session["_tool_snapshot_cwd"] = cwd

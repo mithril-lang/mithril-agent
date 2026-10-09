@@ -70,6 +70,7 @@ def _tool_only_run(rid, params, session, agent, db):
         # workspace and backend overrides, not a gateway process fallback cwd.
         from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides
         overrides = dict(resolve_task_overrides(owner))
+        overrides["_owned_runtime_context"] = session["_tool_snapshot_runtime_context"]
         cwd = session.get("cwd")
         if isinstance(cwd, str) and cwd:
             overrides["cwd"] = cwd

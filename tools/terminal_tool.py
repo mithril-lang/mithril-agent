@@ -500,6 +500,11 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        keys its own home (``profile:<name>`` under persistent Docker, matching branch 3);
        else ``"default"``, which subagent ids collapse onto to share the parent's container.
     """
+    overrides = _task_env_overrides.get(_qualify_task_key(task_id)) if task_id else None
+    if overrides and overrides.get("_owned_runtime_context"):
+        # Owned RPC keeps stable task/receipt IDs while its approved runtime
+        # generation gets a separate cache slot. Never attach an older backend.
+        return f"{_qualify_task_key(task_id)}:owned-runtime:{overrides['_owned_runtime_context']}"
     if task_id and _has_isolation_overrides(task_id):
         return _qualify_task_key(task_id)
     scope = _session_scope()
@@ -571,7 +576,9 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     yet an env may already be cached under the originating task_id; honor it
     instead of spawning a duplicate. Refreshes ``_last_activity`` on a hit.
     """
-    for key in (effective_task_id, task_id):
+    overrides = resolve_task_overrides(task_id)
+    keys = (effective_task_id,) if overrides.get("_owned_runtime_context") else (effective_task_id, task_id)
+    for key in keys:
         if key and key in _active_environments:
             _last_activity[key] = time.time()
             return _active_environments[key]
