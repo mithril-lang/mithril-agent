@@ -11,6 +11,10 @@ import hermes_bootstrap  # noqa: F401
 
 
 def pytest_addoption(parser):
+    parser.addoption("--owned-memory-electron-root", default=None,
+                     help="Desktop checkout for actual Electron memory review qualification")
+    parser.addoption("--owned-memory-electron-build", default=None,
+                     help="Prebuilt isolated memory Electron main/preload/renderer directory")
     parser.addoption("--owned-slash-client-module", default=None,
                      help="Compiled production dashboard client and slash executor for live response-loss qualification")
     parser.addoption("--owned-slash-web-client-module", default=None,
