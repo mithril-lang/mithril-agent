@@ -95,12 +95,49 @@ def test_persistent_slash_workers_keep_pending_memory_custody(tmp_path, monkeypa
             assert pending_id not in workers[other].run("/memory pending")
             assert "No pending memory writes" in workers[other].run(f"/memory approve {pending_id}")
 
+            review = json.loads(workers[owner].run(f"/memory review {pending_id}"))
+            assert review["pending_id"] == pending_id
+            assert len(review["review_digest"]) == 64 and filename in "\n".join(review["review"])
+            digest = review["review_digest"]
+            assert "Usage" in workers[owner].run("/memory review ../foreign")
+            assert "select one proposal" in workers[owner].run(f"/memory approve all {digest}")
+            for decision in ("approve", "reject"):
+                assert "select one proposal" in workers[owner].run(f"/memory {decision} ../foreign {digest}")
+            assert "Invalid memory review digest" in workers[owner].run(f"/memory reject {pending_id} malformed")
+            # The same record and ID in a different profile cannot reuse this
+            # review, including for rejection (which does not apply a store route).
+            with _session_profile_runtime_scope(sessions[other], hydrate_secrets=False):
+                wa.atomic_json_write(wa._pending_path(wa.MEMORY, pending_id), record)
+            other_review = json.loads(workers[other].run(f"/memory review {pending_id}"))
+            assert other_review["review_digest"] != digest
+            for decision in ("approve", "reject"):
+                assert "changed since review" in workers[other].run(f"/memory {decision} {pending_id} {digest}")
+            with _session_profile_runtime_scope(sessions[other], hydrate_secrets=False):
+                assert wa.get_pending(wa.MEMORY, pending_id) == record
+                assert load_on_disk_store()._entries_for(target) == expected[other]
+                assert wa.discard_pending(wa.MEMORY, pending_id)
+            # A record changed after human review cannot be approved or rejected
+            # with that older review.
+            with _session_profile_runtime_scope(sessions[owner], hydrate_secrets=False):
+                changed = copy.deepcopy(record)
+                op = changed["payload"]["operations"][0] if action == "batch" else changed["payload"]
+                field = "new_text" if action == "batch" else "old_text" if action == "remove" else "content"
+                op[field] += " changed after review"
+                wa.atomic_json_write(wa._pending_path(wa.MEMORY, pending_id), changed)
+            for decision in ("approve", "reject"):
+                refused = workers[owner].run(f"/memory {decision} {pending_id} {digest}")
+                assert "changed since review" in refused, refused
+            with _session_profile_runtime_scope(sessions[owner], hydrate_secrets=False):
+                assert wa.get_pending(wa.MEMORY, pending_id) == changed
+                assert load_on_disk_store()._entries_for(target) == expected[owner]
+                wa.atomic_json_write(wa._pending_path(wa.MEMORY, pending_id), record)
+
             # Identical bytes at a different path still cannot inherit the review.
             before = (home / "original" / filename).read_bytes()
             (home / "replacement" / filename).write_bytes(before)
             (home / "memories").unlink()
             (home / "memories").symlink_to(home / "replacement", target_is_directory=True)
-            refused = workers[owner].run(f"/memory approve {pending_id}")
+            refused = workers[owner].run(f"/memory approve {pending_id} {digest}")
             assert "Approved 0" in refused and "store changed" in refused, refused
             with _session_profile_runtime_scope(sessions[owner], hydrate_secrets=False):
                 assert wa.get_pending(wa.MEMORY, pending_id) == record
@@ -108,7 +145,7 @@ def test_persistent_slash_workers_keep_pending_memory_custody(tmp_path, monkeypa
             assert (home / "original" / filename).read_bytes() == before
             (home / "memories").unlink()
             (home / "memories").symlink_to(home / "original", target_is_directory=True)
-            approved = workers[owner].run(f"/memory approve {pending_id}")
+            approved = workers[owner].run(f"/memory approve {pending_id} {digest}")
             assert "Approved 1" in approved, approved
             assert "No pending memory writes" in workers[owner].run(f"/memory approve {pending_id}")
             expected[owner] = next_entries
@@ -125,7 +162,8 @@ def test_persistent_slash_workers_keep_pending_memory_custody(tmp_path, monkeypa
                     "action": "add", "target": target, "content": "must remain rejected",
                 }, store=stores[owner]))
                 assert result["success"] and result["staged"]
-            rejected = workers[owner].run(f"/memory reject {result['pending_id']}")
+            review = json.loads(workers[owner].run(f"/memory review {result['pending_id']}"))
+            rejected = workers[owner].run(f"/memory reject {result['pending_id']} {review['review_digest']}")
             assert "Rejected pending memory write" in rejected, rejected
             with _session_profile_runtime_scope(session, hydrate_secrets=False):
                 assert load_on_disk_store()._entries_for(target) == expected[owner]

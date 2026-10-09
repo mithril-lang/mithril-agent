@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
+import re
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -67,6 +70,8 @@ def handle_pending_subcommand(
     sub, rest = args[0].lower(), args[1:]
     if sub == "pending":
         return _fmt_pending_list(subsystem)
+    if sub == "review" and subsystem == wa.MEMORY:
+        return _review_memory(rest)
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
     if sub in {"reject", "deny", "drop"}:
@@ -82,10 +87,52 @@ def _usage(subsystem: str) -> str:
     return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
 
 
+def _review_digest(subsystem: str, record: dict) -> str:
+    """Bind reviewed record bytes to the selected profile; never disclose its path."""
+    from hermes_constants import get_hermes_home
+    data = {"profile": str(get_hermes_home().resolve()), "subsystem": subsystem, "record": record}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False,
+                                     allow_nan=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def _review_memory(rest: List[str]) -> str:
+    if len(rest) != 1 or not re.fullmatch(r"[a-f0-9]{8}", rest[0]):
+        return "Usage: /memory review <id>"
+    record = wa.get_pending(wa.MEMORY, rest[0])
+    if not record:
+        return f"No pending memory write with id '{rest[0]}'."
+    try:
+        return json.dumps({"pending_id": rest[0], "review_digest": _review_digest(wa.MEMORY, record),
+                           "review": _memory_review_lines(record["payload"])}, ensure_ascii=False)
+    except Exception:
+        return "Pending memory review could not be confirmed; nothing was applied."
+
+
+def _review_error(subsystem: str, rest: List[str], record: dict) -> Optional[str]:
+    """Optional digest leaves existing one-argument CLI approval compatible.
+
+    A remote human-review client must require the reviewed digest, never infer
+    consent from it. This comparison does not lock the pending file or attest a
+    concurrent filesystem writer; existing store-route/entry checks still apply.
+    """
+    if subsystem != wa.MEMORY or len(rest) == 1:
+        return None
+    if len(rest) != 2 or not re.fullmatch(r"[a-f0-9]{64}", rest[1]):
+        return "Invalid memory review digest; review the proposal again."
+    try:
+        if hmac.compare_digest(rest[1], _review_digest(subsystem, record)):
+            return None
+    except Exception:
+        return "Pending memory review could not be confirmed; nothing was applied."
+    return "Pending memory proposal changed since review; review it again. Nothing was applied."
+
+
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
+    if subsystem == wa.MEMORY and len(rest) != 1 and not re.fullmatch(r"[a-f0-9]{8}", target):
+        return "A reviewed memory decision must select one proposal."
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
@@ -96,6 +143,10 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
         if not rec:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
+
+    if subsystem == wa.MEMORY and len(rest) != 1:
+        if error := _review_error(subsystem, rest, targets[0]):
+            return error
 
     applied, failed, overwritten, removed = 0, [], [], []
     for rec in targets:
@@ -161,6 +212,14 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
+    if subsystem == wa.MEMORY and len(rest) != 1:
+        if not re.fullmatch(r"[a-f0-9]{8}", target):
+            return "A reviewed memory decision must select one proposal."
+        record = wa.get_pending(subsystem, target)
+        if not record:
+            return f"No pending {subsystem} write with id '{target}'."
+        if error := _review_error(subsystem, rest, record):
+            return error
     if target.lower() == "all":
         n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
         return f"Rejected {n} pending {subsystem} write(s)."
