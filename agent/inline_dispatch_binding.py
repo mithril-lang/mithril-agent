@@ -38,14 +38,18 @@ def _read_target(agent, attribute):
         manager = getattr(agent, "_memory_manager", None)
         routes = []
         for provider in getattr(manager, "providers", ()):
-            signature = getattr(provider, "identity_signature", None)
-            encoded = json.dumps(signature() if signature else {}, sort_keys=True, allow_nan=False).encode()
-            if len(encoded) > 128 * 1024:
-                raise ValueError("memory provider identity exceeds owned limit")
-            routes.append((id(provider), provider.name, callable_identity(provider.on_memory_write),
-                           hashlib.sha256(encoded).hexdigest()))
+            routes.append((*memory_provider_identity(provider), callable_identity(provider.on_memory_write)))
         return tuple(routes)
     return getattr(agent, attribute, None)
+
+
+def memory_provider_identity(provider):
+    """One private, bounded declared identity for mirror and provider-owned routes."""
+    signature = getattr(provider, "identity_signature", None)
+    encoded = json.dumps(signature() if signature else {}, sort_keys=True, allow_nan=False).encode()
+    if len(encoded) > 128 * 1024:
+        raise ValueError("memory provider identity exceeds owned limit")
+    return (id(provider), provider.name, hashlib.sha256(encoded).hexdigest())
 
 
 def inline_target(agent, attribute):

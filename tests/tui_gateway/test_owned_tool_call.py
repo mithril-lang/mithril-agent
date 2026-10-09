@@ -12,7 +12,7 @@ import pytest
 
 def _qualification_groups(config):
     if config.get("inlineTools"):
-        families = ["todo", "memory", "memory-user", "recall", "recall-discover", "inline-deny"]
+        families = ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"]
         groups = [("test/browser-owned-network.test.ts", ": " + family + "$", "browser-" + family + "-owned-network")
                   for family in families]
         if config["desktopChatSource"]:
@@ -59,7 +59,7 @@ def test_qualification_functions_keep_independent_deadlines(tmp_path, native, de
             if child.poll() is None:
                 child.kill()
             child.communicate(timeout=5)
-    browser_families = ["todo", "memory", "memory-user", "recall", "recall-discover", "inline-deny"] if inline else ["core", "patch", "patch-deny"]
+    browser_families = ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"] if inline else ["core", "patch", "patch-deny"]
     desktop_families = browser_families if inline else ["read", "write", "deny", "alias", "patch", "patch-deny"]
     for family in browser_families:
         assert sum(label == "browser-" + family + "-owned-network" for label, _ in completed) == 1
@@ -191,6 +191,10 @@ def owned_sessions(tmp_path, monkeypatch, request):
         names.append("terminal")
     definitions = [{"type": "function", "function": copy.deepcopy(registry.get_entry(name).schema)} for name in names]
     collision_fixture = getattr(request.node, "originalname", None) == "test_real_browser_api_owned_hermes_network"
+    provider_class = getattr(request, "param", None)
+    if collision_fixture and request.node.callspec.params["family"] == "inline":
+        from tests.tui_gateway.test_owned_provider_identity import ProviderCanary
+        provider_class = ProviderCanary
     if collision_fixture:
         monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
         monkeypatch.setattr(registry, "_generation", registry._generation)
@@ -211,6 +215,13 @@ def owned_sessions(tmp_path, monkeypatch, request):
                                   scope=str(home), override=True)
                 profile_definitions.append({"type": "function", "function": schema})
         with server._session_profile_runtime_scope({"profile_home": str(home)}, hydrate_secrets=False):
+            provider_manager = None
+            if provider_class:
+                from agent.memory_manager import MemoryManager
+                provider_manager = MemoryManager()
+                provider_manager.add_provider(provider_class(home / "provider-canary.jsonl"))
+                profile_definitions += [{"type": "function", "function": schema}
+                                        for schema in provider_manager.get_all_tool_schemas()]
             with (patch("model_tools.get_tool_definitions", return_value=copy.deepcopy(profile_definitions)),
                   patch("model_tools.check_toolset_requirements", return_value={}),
                   patch("agent.process_bootstrap.OpenAI"),
@@ -218,6 +229,8 @@ def owned_sessions(tmp_path, monkeypatch, request):
                 agent = AIAgent(api_key="test-key", base_url="https://example.invalid",
                     quiet_mode=True, skip_context_files=True, skip_memory=True,
                     enabled_toolsets=["memory"] if inline_state else None)
+            if provider_manager is not None:
+                agent._memory_manager = provider_manager
             db = SessionDB(db_path=home / "state.db")
             db.create_session(session_id="same-durable-owner", source="test", model="test")
             agent.session_id, agent._session_db = "same-durable-owner", db
@@ -2017,6 +2030,8 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 "todoRevision": agent._todo_store.snapshot()["revision"],
                 "memory": memory.read_text() if memory.exists() else None,
                 "user": user.read_text() if user.exists() else None,
+                "provider": (Path(session["profile_home"]) / "provider-canary.jsonl").read_text()
+                            if (Path(session["profile_home"]) / "provider-canary.jsonl").exists() else None,
                 "archive": {key: agent._session_db.get_messages(key)
                             for key in ["same-inline-archive", "excluded-inline-archive"]},
                 "frozen": {key: agent._memory_store.format_for_system_prompt(key) for key in ["memory", "user"]},
@@ -2079,18 +2094,18 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
             if family == "inline":
                 for surface in ["browser", *(["desktop browser"] if config["desktopChatSource"] else [])]:
                     for language in ["js", "python"]:
-                        for kind in ["todo", "memory", "memory-user", "recall", "recall-discover", "inline-deny"]:
+                        for kind in ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"]:
                             mode = language + "-" + kind
                             assert f"local owned {surface} qualified: {mode}" in stdout, stdout
                             if surface == "desktop browser" and config["desktopElectronMain"]:
                                 assert f"local owned electron desktop browser qualified: {mode}" in stdout, stdout
                 attempts = owned_sessions["a"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"]
-                expected = [(name, "returned") for name in ["todo_list", "memory", "memory", "session_search", "session_search"]
+                expected = [(name, "returned") for name in ["todo_list", "memory", "memory", "qualification_provider_write", "session_search", "session_search"]
                             for _ in range(2 * (2 if config["desktopChatSource"] else 1))]
                 assert sorted((row["tool_name"], row["state"]) for row in attempts) == sorted(expected)
                 assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
-                print(json.dumps({"qualified": "real-inline-browser-api-hermes", "scenarios": 12,
-                                  "desktop_wasm_scenarios": 12 if config["desktopChatSource"] else 0,
+                print(json.dumps({"qualified": "real-inline-browser-api-hermes", "scenarios": 16,
+                                  "desktop_wasm_scenarios": 16 if config["desktopChatSource"] else 0,
                                   "actual_attempts": len(expected), "foreign_profile_attempts": 0}))
             else:
                 for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny",

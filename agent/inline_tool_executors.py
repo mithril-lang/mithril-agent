@@ -302,7 +302,7 @@ def select_invoke_tool_executor(agent, function_name: str):
     then memory-manager tools, then the remaining inline tools (``message_agent``
     excluded). Context engines do not replace existing inline executors.
     """
-    from agent.inline_dispatch_binding import callable_identity, select_inline_targets
+    from agent.inline_dispatch_binding import callable_identity, memory_provider_identity, select_inline_targets
 
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         executor = INLINE_TOOL_EXECUTORS[function_name]
@@ -319,7 +319,7 @@ def select_invoke_tool_executor(agent, function_name: str):
         if resolve is not None:
             provider, handler, dispatch = resolve(function_name)
             return (lambda agent, args, ctx: dispatch(args),
-                    ("memory", id(memory_manager), id(provider), callable_identity(handler)))
+                    ("memory", id(memory_manager), memory_provider_identity(provider), callable_identity(handler)))
         handler = memory_manager.handle_tool_call
         return (lambda agent, args, ctx: handler(function_name, args),
                 ("memory-manager", id(memory_manager), callable_identity(handler)))
