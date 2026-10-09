@@ -13,6 +13,8 @@ import hermes_bootstrap  # noqa: F401
 def pytest_addoption(parser):
     parser.addoption("--owned-sdk-module", default=None,
                      help="Path to the already-built Mithril owned gateway SDK module")
+    parser.addoption("--owned-dashboard-adapter", default=None,
+                     help="Optional built Desktop target-preview adapter for real stdio/WebSocket qualification")
     parser.addoption("--approval-ui-web-client", default=None,
                      help="Web production DashboardGatewayClient source for local mounted qualification")
     parser.addoption("--approval-ui-desktop-client", default=None,

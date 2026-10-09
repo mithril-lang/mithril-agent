@@ -6,7 +6,10 @@ const input = createInterface({ input: process.stdin })
 const config = await new Promise(resolve => input.once('line', line => resolve(JSON.parse(line))))
 input.close()
 process.stdin.destroy()
-const { callOwnedTool } = await import(pathToFileURL(process.argv[2]).href)
+const sdk = await import(pathToFileURL(process.argv[2]).href)
+const callOwnedTool = process.argv[3]
+  ? (await import(pathToFileURL(process.argv[3]).href)).callDashboardOwnedTool
+  : sdk.callOwnedTool
 async function connect(ticket) {
   const socket = new WebSocket(config.url, ticket ? ['hermes-gateway-v1', `hermes-gateway-ticket.${ticket}`] : [])
   await new Promise((resolve, reject) => {

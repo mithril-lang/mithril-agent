@@ -2,7 +2,10 @@
 import assert from 'node:assert/strict'
 import { pathToFileURL } from 'node:url'
 import { createInterface } from 'node:readline'
-const { callOwnedTool } = await import(pathToFileURL(process.argv[2]).href)
+const sdk = await import(pathToFileURL(process.argv[2]).href)
+const callOwnedTool = process.argv[5]
+  ? (await import(pathToFileURL(process.argv[5]).href)).callDashboardOwnedTool
+  : sdk.callOwnedTool
 const mode = process.argv[3]
 const roots = JSON.parse(process.argv[4])
 let serial = 0

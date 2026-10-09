@@ -639,6 +639,9 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
     if not module or not node:
         pytest.skip("cross-repository qualifier needs a compiled owned SDK module and Node")
     assert Path(module).is_file(), "compiled SDK module missing"
+    adapter = request.config.getoption("--owned-dashboard-adapter")
+    if adapter:
+        assert Path(adapter).is_file(), "compiled Desktop adapter missing"
     roots = {key: value["profile_home"] for key, value in owned_sessions.items()}
     for home in roots.values():
         for visit in range(3):
@@ -657,7 +660,7 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
         monkeypatch.setattr(agent, "_invoke_tool", lose_after_effect)
     process = subprocess.Popen(
         [node, str(Path(__file__).parent / "fixtures" / "owned_sdk_stdio.mjs"),
-         str(Path(module).resolve()), mode, json.dumps(roots)],
+         str(Path(module).resolve()), mode, json.dumps(roots), adapter or ""],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     lock = threading.Lock()
@@ -667,6 +670,7 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
     for key, session in owned_sessions.items():
         session["transport"] = transports[key]
     report, failures, methods = [], [], []
+    previews = {}
 
     def read_requests():
         active = "a"
@@ -693,7 +697,19 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
                 else:
                     assert method in {"tools.show", "tools.call", "tools.target_preview", "tools.attempts"}
                     methods.append(method)
+                    if adapter and method in {"tools.target_preview", "tools.call"}:
+                        key = (params["session_id"], params["name"], json.dumps(params["arguments"], sort_keys=True))
+                        if method == "tools.call":
+                            prior = previews[key]
+                            assert params.get("target_digest") == prior["digest"]
+                            assert (params["context_id"], params["revision"]) == prior["context"]
                     reply = server.dispatch(request, transport=transports[active])
+                    if adapter and method == "tools.target_preview" and reply is not None and "result" in reply:
+                        target = reply["result"]["target_binding"]
+                        previews[key] = {
+                            "digest": target["digest"] if target else None,
+                            "context": (params["context_id"], params["revision"]),
+                        }
                 if reply is not None:
                     transports[active].write(reply)
         except Exception as exc:
@@ -711,6 +727,8 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
         assert not reader.is_alive() and not failures, failures
         assert report == [{"mode": mode, "passed": True}]
         assert "tools.call" in methods and "tools.attempts" in methods
+        if adapter:
+            assert "tools.target_preview" in methods
         for session in owned_sessions.values():
             assert session["agent"]._session_messages == [{"role": "user", "content": "owned conversation"}]
             assert not session["running"]
@@ -752,6 +770,9 @@ def test_compiled_owned_sdk_authenticated_websocket(owned_sessions, monkeypatch,
     node = shutil.which("node")
     if not module or not node:
         pytest.skip("cross-repository qualifier needs compiled SDK module and Node")
+    adapter = request.config.getoption("--owned-dashboard-adapter")
+    if adapter:
+        assert Path(adapter).is_file(), "compiled Desktop adapter missing"
     home = Path(owned_sessions["a"]["profile_home"])
     (home / "ws-owned.txt").write_text("ws-owned")
     monkeypatch.setattr(web.app.state, "auth_required", True, raising=False)
@@ -779,7 +800,7 @@ def test_compiled_owned_sdk_authenticated_websocket(owned_sessions, monkeypatch,
                   "tickets": [mint_ticket(user_id="fixture-owner", provider="stub") for _ in range(2)],
                   "input": str(home / "ws-owned.txt"), "output": str(home / "ws-output.txt")}
         process = subprocess.Popen(
-            [node, str(Path(__file__).parent / "fixtures" / "owned_sdk_websocket.mjs"), module],
+            [node, str(Path(__file__).parent / "fixtures" / "owned_sdk_websocket.mjs"), module, adapter or ""],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             stdout, stderr = process.communicate(json.dumps(config) + "\n", timeout=60)
