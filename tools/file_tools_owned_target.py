@@ -28,3 +28,40 @@ def local_search_target(args, task_id):
     if path is None or (isinstance(path, str) and not path.strip()):
         path = "."
     return local_file_target({"path": path}, task_id)
+
+
+def local_patch_target(args, task_id):
+    """Describe every local checked patch path using the handler's resolution.
+
+    Content edits dereference the final link; Delete and Move act on entries.
+    This is a bounded partial identity, not atomic multi-file authority.
+    """
+    if args.get("mode", "replace") == "replace":
+        return local_file_target(args, task_id)
+    from agent.file_safety import get_nt_namespace_error
+    from tools.file_tools import _collect_v4a_header_paths
+    from tools.file_tools_paths import _resolve_entry_for_task, _resolve_path_for_task, _terminal_env_type_for_task
+
+    if args.get("mode") != "patch" or _terminal_env_type_for_task(task_id) != "local":
+        return None
+    patch = args.get("patch")
+    if not isinstance(patch, str) or not patch:
+        return None
+    collected = _collect_v4a_header_paths(patch)
+    if isinstance(collected, str):
+        raise ValueError("Invalid patch target paths")
+    content_paths, entry_paths = list(collected[1]), collected[2]
+    if args.get("path"):
+        content_paths.append(args["path"])
+    targets = set()
+    for paths, resolution, resolver in [
+        (content_paths, "content", _resolve_path_for_task), (entry_paths, "entry", _resolve_entry_for_task),
+    ]:
+        for path in paths:
+            if not isinstance(path, str) or not path or get_nt_namespace_error(path):
+                raise ValueError("Invalid patch target path")
+            targets.add((str(resolver(path, task_id)), resolution))
+    if not targets:
+        return None
+    return {"namespace": "selected-local-terminal", "paths": [
+        {"path": path, "resolution": resolution} for path, resolution in sorted(targets)]}

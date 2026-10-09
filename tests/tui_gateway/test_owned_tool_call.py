@@ -157,6 +157,10 @@ def owned_sessions(tmp_path, monkeypatch, request):
         "test_compiled_owned_sdk_real_stdio_roundtrip",
     }:
         names.append("search_files")
+    if getattr(request.node, "originalname", None) in {
+        "test_owned_patch_targets_preserve_content_and_entries", "test_compiled_owned_sdk_real_stdio_roundtrip",
+    }:
+        names.append("patch")
     inline_state = getattr(request.node, "originalname", None) in {
         "test_owned_memory_preserves_profile_prompt_and_replay",
         "test_owned_session_search_uses_attached_durable_store",
@@ -886,6 +890,87 @@ def test_owned_search_defaults_stay_in_selected_profile(owned_sessions, path_arg
         assert (session["agent"].tools, session["history"]) == frozen[owner]
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("mode", ["replace", "patch"])
+def test_owned_patch_targets_preserve_content_and_entries(owned_sessions, monkeypatch, mode):
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    frozen = {owner: (copy.deepcopy(session["agent"].tools), copy.deepcopy(session["history"]))
+              for owner, session in owned_sessions.items()}
+    for visit, owner in enumerate(["a", "b", "a"]):
+        home = Path(owned_sessions[owner]["profile_home"])
+        old, fresh, alias = home / f"patch-old-{visit}", home / f"patch-fresh-{visit}", home / f"patch-alias-{visit}"
+        old.mkdir()
+        fresh.mkdir()
+        for base in [old, fresh]:
+            (base / "update-target.txt").write_text("before\n")
+            (base / "update.txt").symlink_to(base / "update-target.txt")
+            (base / "delete-target.txt").write_text("keep-delete\n")
+            (base / "move-target.txt").write_text("keep-move\n")
+            (base / "delete-link.txt").symlink_to(base / "delete-target.txt")
+            (base / "move-from.txt").symlink_to(base / "move-target.txt")
+        alias.symlink_to(old, target_is_directory=True)
+        args = {"mode": "replace", "path": str(alias / "update.txt"), "old_string": "before", "new_string": "after"}
+        if mode == "patch":
+            args = {"mode": "patch", "patch": (
+                f"*** Begin Patch\n*** Update File: {alias}/update.txt\n@@\n-before\n+after\n"
+                f"*** Add File: {alias}/added.txt\n+added\n*** Delete File: {alias}/delete-link.txt\n"
+                f"*** Move File: {alias}/move-from.txt -> {alias}/move-to.txt\n*** End Patch")}
+        foreign = "b" if owner == "a" else "a"
+        assert _target_preview(owned_sessions, foreign, owner, "patch", args)["error"]["code"] == 4001
+        first = _target_preview(owned_sessions, owner, owner, "patch", args)["result"]["target_binding"]
+        assert first is not None, first
+        if mode == "patch":
+            expected = sorted((str(old / name), resolution) for name, resolution in [
+                ("update-target.txt", "content"), ("added.txt", "content"), ("delete-link.txt", "entry"),
+                ("move-from.txt", "entry"), ("move-to.txt", "entry")])
+            assert [(p["path"], p["resolution"]) for p in first["target"]["paths"]] == expected
+        else:
+            assert first["target"]["path"] == str(old / "update-target.txt")
+        alias.unlink()
+        alias.symlink_to(fresh, target_is_directory=True)
+        stale = _call(owned_sessions, owner, owner, "patch", args, f"patch-stale-{visit}", target_digest=first["digest"])
+        assert stale["error"]["code"] == 4092, stale
+        binding = _target_preview(owned_sessions, owner, owner, "patch", args)["result"]["target_binding"]
+        altered = {**args, **({"new_string": "other"} if mode == "replace" else {"patch": args["patch"].replace("+added", "+other")})}
+        changed = _call(owned_sessions, owner, owner, "patch", altered, f"patch-changed-{visit}", target_digest=binding["digest"])
+        assert changed["error"]["code"] == 4092, changed
+        foreign_call = _call(owned_sessions, foreign, owner, "patch", args, f"patch-foreign-{visit}", target_digest=binding["digest"])
+        assert foreign_call["error"]["code"] == 4001, foreign_call
+
+        def redirect(*, args, next_call, **kwargs):
+            alias.unlink()
+            alias.symlink_to(old, target_is_directory=True)
+            return next_call(args)
+
+        manager._middleware["tool_execution"] = [redirect]
+        rejected = _call(owned_sessions, owner, owner, "patch", args, f"patch-mid-{visit}", target_digest=binding["digest"])["result"]
+        assert rejected["state"] == "rejected" and rejected["output"] is None, rejected
+        assert owned_sessions[owner]["agent"]._session_db.get_tool_attempt("same-durable-owner", rejected["attempt_id"])["dispatched_at"] is None
+        manager._middleware.clear()
+        alias.unlink()
+        alias.symlink_to(fresh, target_is_directory=True)
+        result = _call(owned_sessions, owner, owner, "patch", args, f"patch-fresh-{visit}", target_digest=binding["digest"])["result"]
+        assert result["state"] == "returned" and not result["output"].get("error"), result
+        assert (fresh / "update.txt").read_text() == "after\n" and (old / "update.txt").read_text() == "before\n"
+        assert (fresh / "update.txt").is_symlink() and (old / "update.txt").is_symlink()
+        if mode == "patch":
+            assert (fresh / "added.txt").read_text() == "added" and not (old / "added.txt").exists()
+            assert not (fresh / "delete-link.txt").is_symlink() and (old / "delete-link.txt").is_symlink()
+            assert (fresh / "move-to.txt").is_symlink() and not (fresh / "move-from.txt").is_symlink()
+            assert (old / "move-from.txt").is_symlink() and not (old / "move-to.txt").exists()
+        for base in [old, fresh]:
+            assert (base / "delete-target.txt").read_text() == "keep-delete\n"
+            assert (base / "move-target.txt").read_text() == "keep-move\n"
+        replay = _call(owned_sessions, owner, owner, "patch", args, f"patch-fresh-{visit}", target_digest=binding["digest"])["result"]
+        assert replay["duplicate"] and replay["output"] is None
+    for owner, session in owned_sessions.items():
+        assert (session["agent"].tools, session["history"]) == frozen[owner]
+
+
 def test_owned_target_preview_respects_owner_and_unknown_tools(owned_sessions):
     for owner, foreign in [("a", "b"), ("b", "a"), ("a", "b")]:
         args = {"path": str(Path(owned_sessions[owner]["profile_home"]) / "owner.txt"), "content": "x"}
@@ -1365,6 +1450,8 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
         for visit in range(3):
             for prefix in ["owned", "child"]:
                 (Path(home) / f"{prefix}-{visit}.txt").write_text(f"{Path(home).name}-owned")
+            for prefix in ["patch-update", "patch-delete", "patch-move-from"]:
+                (Path(home) / f"{prefix}-{visit}.txt").write_text("before\n")
     if mode == "lost-result":
         agent = owned_sessions["a"]["agent"]
         original = agent._invoke_tool
@@ -1455,6 +1542,11 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
                 assert session["agent"]._todo_store.read()[0]["content"] == f"{owner}-todo"
             for visit, owner in enumerate(["a", "b", "a"]):
                 assert (Path(roots[owner]) / f"sdk-{visit}.txt").read_text() == "effect-already-delivered"
+                assert (Path(roots[owner]) / f"patch-update-{visit}.txt").read_text() == "after\n"
+                assert (Path(roots[owner]) / f"patch-added-{visit}.txt").read_text() == "added"
+                assert not (Path(roots[owner]) / f"patch-delete-{visit}.txt").exists()
+                assert not (Path(roots[owner]) / f"patch-move-from-{visit}.txt").exists()
+                assert (Path(roots[owner]) / f"patch-move-to-{visit}.txt").read_text() == "before\n"
         else:
             assert (Path(roots["a"]) / "lost.txt").read_text() == "effect-already-delivered"
             db = owned_sessions["a"]["agent"]._session_db

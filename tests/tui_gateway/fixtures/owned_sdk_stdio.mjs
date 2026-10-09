@@ -73,6 +73,19 @@ try {
           assert.equal(replay.output, null)
         }
       }
+      const patchArgs = { mode: 'patch', patch: [
+        '*** Begin Patch', `*** Update File: ${roots[owner]}/patch-update-${visit}.txt`, '@@', '-before', '+after',
+        `*** Add File: ${roots[owner]}/patch-added-${visit}.txt`, '+added',
+        `*** Delete File: ${roots[owner]}/patch-delete-${visit}.txt`,
+        `*** Move File: ${roots[owner]}/patch-move-from-${visit}.txt -> ${roots[owner]}/patch-move-to-${visit}.txt`,
+        '*** End Patch'
+      ].join('\n') };
+      const patch = await invoke('patch', patchArgs, `patch-${visit}`);
+      assert.equal(patch.state, 'returned');
+      assert.ok(!patch.output.error, JSON.stringify(patch.output));
+      const patchReplay = await invoke('patch', patchArgs, `patch-${visit}`);
+      assert.equal(patchReplay.observation, 'metadata-only');
+      assert.equal(patchReplay.output, null);
       await assert.rejects(
         invoke('read_file', { path: `${roots.b}/owned.txt` }, `foreign-${visit}`, owner === 'a' ? 'b' : 'a'),
         e => e.outcome === 'not-dispatched'
