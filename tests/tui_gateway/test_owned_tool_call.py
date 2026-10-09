@@ -752,3 +752,79 @@ def test_owned_working_directory_context_retired_before_handler(owned_sessions):
     assert "original-target" in json.dumps(fresh_home["result"]["output"])
     assert "new-target" not in json.dumps(fresh_home["result"]["output"])
     assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
+
+
+@pytest.mark.parametrize("terminal_change", ["  timeout: 181\n", "  backend: ssh\n  ssh_host: example.invalid\n"])
+def test_owned_terminal_policy_retires_context_without_schema_or_profile_leak(owned_sessions, terminal_change):
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+
+    session, foreign = owned_sessions["a"], owned_sessions["b"]
+    home = Path(session["profile_home"])
+    config = home / "config.yaml"
+    original_config = config.read_text()
+    (home / "warm.txt").write_text("warm local runtime")
+    assert _call(owned_sessions, "a", "a", "read_file", {"path": "warm.txt"}, "warm-policy")["result"]["state"] == "returned"
+    captured, foreign_before = session_tool_snapshot(session), session_tool_snapshot(foreign)
+    config.write_text(original_config + "terminal:\n" + terminal_change)
+    target = home / "retired-policy.txt"
+    stale = _call(owned_sessions, "a", "a", "write_file", {"path": str(target), "content": "must not write"},
+                  "stale-terminal-policy", context_id=captured["context_id"], revision=captured["revision"])
+    assert stale.get("error", {}).get("code") == 4092, stale
+    db = session["agent"]._session_db
+    assert not target.exists() and db.get_tool_attempt("same-durable-owner", "rpc:stale-terminal-policy") is None
+    changed = session_tool_snapshot(session)
+    assert changed["context_id"] != captured["context_id"] and changed["revision"] == captured["revision"]
+    assert session_tool_snapshot(foreign) == foreign_before
+    assert set(changed) == set(captured) and "example.invalid" not in json.dumps(changed)
+    config.write_text(original_config)
+    restored = session_tool_snapshot(session)
+    assert restored["context_id"] not in {captured["context_id"], changed["context_id"]}
+    fresh = _call(owned_sessions, "a", "a", "write_file", {"path": str(target), "content": "fresh policy"},
+                  "fresh-terminal-policy")
+    assert fresh["result"]["state"] == "returned" and target.read_text() == "fresh policy"
+    valid = session_tool_snapshot(session)
+    config.write_text("terminal: [unparseable\n")
+    with pytest.raises(ValueError, match="owned terminal policy is unavailable"):
+        session_tool_snapshot(session)
+    config.write_text(original_config)
+    repaired = session_tool_snapshot(session)
+    assert repaired["context_id"] != valid["context_id"] and repaired["revision"] == valid["revision"]
+    import tui_gateway.server as server
+    from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
+    with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+        register_task_env_overrides(session["agent"].session_id, {"docker_image": "qualification-image"})
+    try:
+        override = session_tool_snapshot(session)
+        assert override["context_id"] != repaired["context_id"]
+        assert "qualification-image" not in json.dumps(override)
+        assert session_tool_snapshot(foreign) == foreign_before
+    finally:
+        with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+            clear_task_env_overrides(session["agent"].session_id)
+    assert session_tool_snapshot(session)["context_id"] not in {repaired["context_id"], override["context_id"]}
+    assert foreign["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
+
+
+def test_owned_terminal_policy_change_during_approval_never_dispatches(owned_sessions, monkeypatch):
+    session = owned_sessions["a"]
+    agent, db = session["agent"], session["agent"]._session_db
+    home = Path(session["profile_home"])
+    target, config = home / "approval-policy.txt", home / "config.yaml"
+    original_config = config.read_text()
+    original_policy = agent._tool_guardrails.before_call
+
+    def change_policy(*args, **kwargs):
+        decision = original_policy(*args, **kwargs)
+        config.write_text(original_config + "terminal:\n  timeout: 181\n")
+        return decision
+
+    monkeypatch.setattr(agent._tool_guardrails, "before_call", change_policy)
+    arguments = {"path": str(target), "content": "must not write after approval"}
+    reply = _call(owned_sessions, "a", "a", "write_file", arguments, "changed-approval-policy")
+    assert reply["result"]["state"] == "rejected", reply
+    assert not target.exists()
+    row = db.get_tool_attempt(agent.session_id, "rpc:changed-approval-policy")
+    assert row["dispatched_at"] is None and row["terminal"]
+    replay = _call(owned_sessions, "a", "a", "write_file", arguments, "changed-approval-policy")
+    assert replay["result"]["duplicate"] and replay["result"]["observation"] == "metadata-only"
+    assert not target.exists() and len(db.list_tool_attempts(agent.session_id)["attempts"]) == 1

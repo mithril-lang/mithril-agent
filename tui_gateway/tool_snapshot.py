@@ -8,6 +8,25 @@ import json
 import uuid
 
 
+def _terminal_policy_identity(session: dict) -> str:
+    """Re-resolve the owner's policy even inside a scope captured before an approval wait.
+
+    Only the digest stays host-side. Discovery binds the same complete profile
+    scope as execution, including direct callers that have no ambient turn.
+    """
+    from tui_gateway.server import _session_profile_runtime_scope
+    from tools.terminal_tool import _get_env_config, resolve_task_overrides
+
+    with _session_profile_runtime_scope(session, hydrate_secrets=False):
+        policy = {"terminal": _get_env_config(),
+                  "overrides": resolve_task_overrides(getattr(session["agent"], "session_id", None))}
+        encoded = json.dumps(policy, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(encoded) > 2 * 1024 * 1024:
+        raise ValueError("owned terminal policy exceeds context limit")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def session_tool_snapshot(session: dict | None) -> dict:
     """Copy the same published array a live agent uses, under its publication lock.
 
@@ -22,6 +41,15 @@ def session_tool_snapshot(session: dict | None) -> dict:
                 "revision": None, "registry_generation": None, "definitions": []}
     from tools.mcp_tool_agent import _agent_tools_lock
 
+    try:
+        policy = _terminal_policy_identity(session)
+    except Exception:
+        # An unreadable policy retires approval too: repairing it must not
+        # revive the context that existed before the refusal interval.
+        with _agent_tools_lock:
+            session["_tool_snapshot_terminal_policy"] = None
+            session["_tool_snapshot_context"] = uuid.uuid4().hex
+        raise ValueError("owned terminal policy is unavailable") from None
     with _agent_tools_lock:
         agent = session["agent"]
         definitions = copy.deepcopy(getattr(agent, "tools", []))
@@ -30,14 +58,16 @@ def session_tool_snapshot(session: dict | None) -> dict:
         cwd = session.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             raise ValueError("invalid owned working directory context")
-        # Relative targets belong to the selected working directory. Changing it
-        # retires old grants even when schemas/profile/agent stay identical.
+        # Targets and execution settings can change without rebuilding frozen
+        # schemas. Any observed change retires grants, including A -> B -> A.
         if (session.get("_tool_snapshot_agent") is not agent
                 or session.get("_tool_snapshot_home") != home
-                or session.get("_tool_snapshot_cwd") != cwd):
+                or session.get("_tool_snapshot_cwd") != cwd
+                or session.get("_tool_snapshot_terminal_policy") != policy):
             session["_tool_snapshot_agent"] = agent
             session["_tool_snapshot_home"] = home
             session["_tool_snapshot_cwd"] = cwd
+            session["_tool_snapshot_terminal_policy"] = policy
             session["_tool_snapshot_context"] = uuid.uuid4().hex
         context = session["_tool_snapshot_context"]
     if not isinstance(definitions, list) or len(definitions) > 4096:
