@@ -11,6 +11,10 @@ import hermes_bootstrap  # noqa: F401
 
 
 def pytest_addoption(parser):
+    parser.addoption("--owned-slash-client-module", default=None,
+                     help="Compiled production dashboard client and slash executor for live response-loss qualification")
+    parser.addoption("--owned-slash-web-client-module", default=None,
+                     help="Compiled production Web dashboard client for live response-loss qualification")
     parser.addoption("--owned-sdk-module", default=None,
                      help="Path to the already-built Mithril owned gateway SDK module")
     parser.addoption("--owned-dashboard-adapter", default=None,
