@@ -477,6 +477,26 @@ to the wire. The existing registered-handler fence still pins the callable durin
 an admitted call. This covers registered execution targets; inline store/callback
 and provider configuration generations require their own admission audit.
 
+### Owned local write target recheck
+
+The builtin `write_file` registration supplies a private `dispatch_target`
+resolver using the same selected-task local path resolver as the file handler.
+Owned dispatch captures its finite JSON target before middleware and compares
+it immediately before marking the handler dispatched. A symlink retargeted by
+request/execution middleware or a pre-tool hook is refused, even when arguments
+are unchanged. Root calls and Python `execute_code` children use the same fence;
+ordinary model-origin dispatch retains its existing behavior. Resolver identity
+is part of the private registration/context capture and never appears on the wire.
+Expected target-resolution failures at admission remain durable policy refusals,
+with no dispatched timestamp; duplicate requests return metadata only.
+
+This is a path recheck, not a resolved target in the human approval preview or a
+target grant. SSH/container namespaces return no binding rather than interpreting
+their paths on the host. Other operations remain unbound. It does not pin an inode
+or prevent a filesystem race after the final recheck. Full operation declarations,
+preview-to-executor target identity, namespace-specific resolution and atomic file
+effects remain separate qualification gates.
+
 ### Cross-language owned SDK qualification
 
 The opt-in `tests/tui_gateway/test_owned_tool_call.py` cross-repository qualifier

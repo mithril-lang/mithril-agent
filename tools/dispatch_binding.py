@@ -33,25 +33,29 @@ class DispatchBinding:
     handler: object
     is_async: bool
     schema_digest: str | None
+    target_resolver: object = None
 
     def same_capture(self, other):
         """Compare immutable captures, never a plugin callable's custom equality."""
         return (self.registry is other.registry and self.name == other.name
                 and self.home == other.home and self.entry is other.entry
                 and self.handler is other.handler and self.is_async == other.is_async
-                and self.schema_digest == other.schema_digest)
+                and self.schema_digest == other.schema_digest
+                and self.target_resolver is other.target_resolver)
 
     def matches(self, entry):
         return (entry is self.entry and (entry is None or
                 (entry.handler is self.handler and entry.is_async == self.is_async
-                 and _schema_digest(entry) == self.schema_digest)))
+                 and _schema_digest(entry) == self.schema_digest
+                 and entry.dispatch_target is self.target_resolver)))
 
 
 def capture_dispatch_binding(registry, name):
     with registry._lock:
         entry = registry.get_entry(name)
         return DispatchBinding(registry, name, hermes_home_key(), entry,
-            entry.handler if entry else None, entry.is_async if entry else False, _schema_digest(entry))
+            entry.handler if entry else None, entry.is_async if entry else False, _schema_digest(entry),
+            entry.dispatch_target if entry else None)
 
 
 @contextmanager

@@ -196,6 +196,7 @@ class ToolEntry:
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
     effect_manifest: Optional[dict] = None
+    dispatch_target: Optional[Callable] = None
 
 
 class _PluginOverridePolicy:
@@ -669,7 +670,8 @@ class ToolRegistry:
         check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None, override: bool = False,
-        scope: Optional[str] = None, effect_manifest: Optional[dict] = None):
+        scope: Optional[str] = None, effect_manifest: Optional[dict] = None,
+        dispatch_target: Optional[Callable] = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -686,6 +688,8 @@ class ToolRegistry:
                 f"got {type(params).__name__}")
         from tools.effect_manifest import copy_effect_manifest
         manifest = copy_effect_manifest(effect_manifest) if effect_manifest is not None else None
+        if dispatch_target is not None and not callable(dispatch_target):
+            raise ValueError("dispatch_target must be callable")
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner
@@ -736,7 +740,8 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
-                dynamic_schema_overrides=dynamic_schema_overrides, effect_manifest=manifest)
+                dynamic_schema_overrides=dynamic_schema_overrides, effect_manifest=manifest,
+                dispatch_target=dispatch_target)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,

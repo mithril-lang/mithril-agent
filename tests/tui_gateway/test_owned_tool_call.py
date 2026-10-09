@@ -142,6 +142,72 @@ def test_owned_middleware_cannot_change_exact_intent(owned_sessions, monkeypatch
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("stage", ["tool_request", "tool_execution", "pre_tool_call"])
+@pytest.mark.parametrize("tool", ["write_file", "execute_code"])
+def test_owned_symlink_target_cannot_change_after_admission(owned_sessions, monkeypatch, stage, tool):
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    for visit, owner in enumerate(["a", "b", "a"]):
+        home = Path(owned_sessions[owner]["profile_home"])
+        original, redirected = home / f"original-{visit}", home / f"redirected-{visit}"
+        original.mkdir()
+        redirected.mkdir()
+        alias = home / f"alias-{visit}"
+        alias.symlink_to(original, target_is_directory=True)
+        path = alias / "note.txt"
+
+        def redirect(*, tool_name, args, next_call=None, **kwargs):
+            if tool_name == "write_file":
+                alias.unlink()
+                alias.symlink_to(redirected, target_is_directory=True)
+            if stage == "pre_tool_call":
+                return {"action": "continue"}
+            return {"args": args} if stage == "tool_request" else next_call(args)
+
+        if stage == "pre_tool_call":
+            manager._hooks[stage] = [redirect]
+        else:
+            manager._middleware[stage] = [redirect]
+        args = {"path": str(path), "content": "exact unchanged JSON"} if tool == "write_file" else {
+            "code": f"from hermes_tools import write_file\nprint(write_file({str(path)!r}, 'exact unchanged JSON'))"}
+        request = f"target-{stage}-{tool}-{visit}"
+        result = _call(owned_sessions, owner, owner, tool, args, request)["result"]
+        assert not (redirected / "note.txt").exists() and not (original / "note.txt").exists(), result
+        if tool == "write_file":
+            assert result["state"] == "rejected" and result["observation"] == "policy-result", result
+            row = owned_sessions[owner]["agent"]._session_db.get_tool_attempt("same-durable-owner", result["attempt_id"])
+            assert row["dispatched_at"] is None
+        else:
+            assert "target" in result["output"]["output"], result
+        replay = _call(owned_sessions, owner, owner, tool, args, request)["result"]
+        assert replay["duplicate"] and replay["observation"] == "metadata-only"
+        manager._hooks.clear()
+        manager._middleware.clear()
+        alias.unlink()
+        alias.symlink_to(original, target_is_directory=True)
+        fresh = _call(owned_sessions, owner, owner, "write_file", {"path": str(path), "content": "fresh"}, f"fresh-{request}")["result"]
+        assert fresh["state"] == "returned" and (original / "note.txt").read_text() == "fresh"
+        assert not (redirected / "note.txt").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_owned_unresolvable_target_is_recorded_before_dispatch(owned_sessions):
+    for visit, owner in enumerate(["a", "b", "a"]):
+        home = Path(owned_sessions[owner]["profile_home"])
+        args = {"path": str(home) + "/\0note.txt", "content": "never write"}
+        request = f"unresolvable-{visit}"
+        result = _call(owned_sessions, owner, owner, "write_file", args, request)["result"]
+        assert result["state"] == "rejected" and result["observation"] == "policy-result", result
+        row = owned_sessions[owner]["agent"]._session_db.get_tool_attempt("same-durable-owner", result["attempt_id"])
+        assert row["dispatched_at"] is None
+        replay = _call(owned_sessions, owner, owner, "write_file", args, request)["result"]
+        assert replay["duplicate"] and replay["observation"] == "metadata-only"
+
+
+@pytest.mark.platforms("posix")
 def test_owned_middleware_equivalent_json_still_executes_once(owned_sessions, monkeypatch):
     import tui_gateway.server as server
     from agent.code_child_dispatch import bind_code_child_dispatch, resolve_code_child_dispatch

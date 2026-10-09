@@ -76,6 +76,9 @@ class _ParentDispatch:
         # Owned RPC admission covers the caller's exact JSON, not a later
         # middleware rewrite. Capture before callbacks can mutate args in place.
         intent_digest = _digest(args)[0] if self.authority is not None else None
+        from agent.owned_target_binding import OwnedTargetBinding
+        target_binding = (OwnedTargetBinding(self.schemas.registrations[name], args, task_id)
+                          if self.authority is not None else None)
         self.attempts.begin(ref, self.parent)
         dispatched = rejected_before_dispatch = False
 
@@ -92,6 +95,8 @@ class _ParentDispatch:
                         rejected = "The owned tool intent changed after admission."
                 except (TypeError, ValueError, OverflowError, RecursionError):
                     rejected = "The owned tool intent is no longer finite JSON."
+            if rejected is None and target_binding is not None:
+                rejected = target_binding.rejection(final_args, task_id)
             if rejected:
                 rejected_before_dispatch = True
                 return tool_error(rejected)
