@@ -12,6 +12,7 @@ Environment knobs (all optional):
 * ``MCPE2E_CANARY`` — returned by every tool so a test can prove a REAL round trip.
 * ``MCPE2E_ECHO_ENV`` — name of an env var whose value ``env_echo`` returns (``${VAR}`` checks).
 * ``MCPE2E_RESOURCE_ONLY=1`` — advertise one resource and NO tools.
+* ``MCPE2E_EFFECT_FILE`` — persist each rw_probe nonce; nonce ``crash`` exits after fsync.
 * ``MCPE2E_TRANSPORT=http`` + ``MCPE2E_PORT_FILE`` — serve streamable HTTP on
   ``MCPE2E_PORT`` (0 = ephemeral) and write the bound port to the file.
 * ``MCPE2E_401_CALLS=<path>`` — HTTP only: while the file holds a positive integer N,
@@ -110,6 +111,14 @@ def build_server():
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True))
     def rw_probe(nonce: str = "") -> str:
         """Destructive probe (annotated destructiveHint=true)."""
+        effect_file = os.environ.get("MCPE2E_EFFECT_FILE")
+        if effect_file:
+            with open(effect_file, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"pid": os.getpid(), "nonce": nonce}) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            if nonce == "crash":
+                os._exit(7)  # Persist the test effect, then lose the response.
         return f"RW:{canary}:{nonce}"
 
     @server.tool()

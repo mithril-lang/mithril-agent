@@ -352,7 +352,8 @@ def test_owned_deferred_resolution_cannot_redirect_execution(owned_sessions, mon
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("consent", ["read-only", "approve", "retire", "queue-tool", "queue-resource"])
+@pytest.mark.parametrize("consent", ["read-only", "approve", "retire", "queue-tool", "queue-resource",
+                                    "recovery-write"])
 def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monkeypatch, request, consent):
     import sys
     import tui_gateway.server as server
@@ -377,6 +378,8 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
             config = {"command": sys.executable, "args": [str(fixture)], "trust": "untrusted",
                       "connect_timeout": 15, "timeout": 10,
                       "env": {"MCPE2E_LOG": str(logs[owner]), "MCPE2E_CANARY": "${OWNED_MCP_CANARY}"}}
+            if consent == "recovery-write":
+                config["env"]["MCPE2E_EFFECT_FILE"] = str(home / "mcp-effects.jsonl")
             with server._session_profile_runtime_scope(session):
                 registered = _run_on_mcp_loop(
                     lambda: discovery._discover_and_register_server("owned-probe", config), timeout=20)
@@ -495,6 +498,49 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
             assert logs["a"].read_text() == before
             fresh = _call(owned_sessions, "a", "a", "tool_call", args, "mcp-queued-fresh")
             assert fresh["result"]["state"] == "returned", fresh
+        if consent == "recovery-write":
+            from tools import approval_prompt
+
+            def approve_crash(command, description, **kwargs):
+                approvals.append(command)
+                return "once"
+
+            monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", approve_crash)
+            effect_file = Path(owned_sessions["a"]["profile_home"]) / "mcp-effects.jsonl"
+            args = {"calls": [{"name": writes["a"], "arguments": {"nonce": "crash"}}]}
+            crashed = _call(owned_sessions, "a", "a", "tool_call", args, "mcp-crash-write")
+            assert crashed["result"]["state"] == "returned-error", crashed
+            assert '"outcome_uncertain": true' in json.dumps(crashed["result"]["output"]), crashed
+            effects = effect_file.read_text()
+            assert [json.loads(line)["nonce"] for line in effects.splitlines()] == ["crash"]
+            before = logs["a"].read_text()
+            replay = _call(owned_sessions, "a", "a", "tool_call", args, "mcp-crash-write")
+            assert replay["result"]["duplicate"] and replay["result"]["output"] is None, replay
+            assert logs["a"].read_text() == before and effect_file.read_text() == effects
+            assert len(approvals) == 1
+            recovered = _call(owned_sessions, "a", "a", "tool_call",
+                              {"calls": [{"name": names["a"], "arguments": {"nonce": "recovered"}}]},
+                              "mcp-recovered-read")
+            assert recovered["result"]["state"] == "returned", recovered
+            assert "RO:owned-a:recovered" in json.dumps(recovered["result"]["output"]), recovered
+            fresh = _call(owned_sessions, "a", "a", "tool_call",
+                          {"calls": [{"name": writes["a"], "arguments": {"nonce": "after-recovery"}}]},
+                          "mcp-recovered-write")
+            assert fresh["result"]["state"] == "returned" and len(approvals) == 2, fresh
+            assert [json.loads(line)["nonce"] for line in effect_file.read_text().splitlines()] == [
+                "crash", "after-recovery"]
+            assert not (Path(owned_sessions["b"]["profile_home"]) / "mcp-effects.jsonl").exists()
+            evidence = request.config.getoption("--owned-qualification-output")
+            if evidence:
+                output = Path(evidence)
+                output.mkdir(parents=True, exist_ok=True)
+                keys = ("state", "terminal", "duplicate", "observation", "attempt_id")
+                receipt = {label: {key: reply["result"][key] for key in keys}
+                           for label, reply in [("crashed", crashed), ("replay", replay),
+                                                ("recoveredRead", recovered), ("freshWrite", fresh)]}
+                receipt["outcomeUncertainObserved"] = True
+                receipt["approvalAnswers"] = len(approvals)
+                (output / "mcp-recovery-receipts.json").write_text(json.dumps(receipt, indent=2))
         for owner in ["a", "b"]:
             frames = [json.loads(line) for line in logs[owner].read_text().splitlines()]
             pids.update(frame["pid"] for frame in frames)
@@ -511,6 +557,10 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
                 expected.append({"name": "rw_probe", "arguments": {"nonce": "approved"}})
             if owner == "a" and consent == "queue-tool":
                 expected.append({"name": "ro_probe", "arguments": {"nonce": "queued"}})
+            if owner == "a" and consent == "recovery-write":
+                expected.extend([{"name": "rw_probe", "arguments": {"nonce": "crash"}},
+                                 {"name": "ro_probe", "arguments": {"nonce": "recovered"}},
+                                 {"name": "rw_probe", "arguments": {"nonce": "after-recovery"}}])
             assert [{"name": call["name"], "arguments": call["arguments"]} for call in calls] == expected, calls
             assert owned_sessions[owner]["agent"].tools == tools[owner]
             assert owned_sessions[owner]["agent"]._session_messages == histories[owner]
@@ -519,12 +569,16 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
                 output = Path(evidence)
                 output.mkdir(parents=True, exist_ok=True)
                 (output / f"mcp-{consent}-{owner}-inbound.jsonl").write_text(logs[owner].read_text())
+                effects = Path(owned_sessions[owner]["profile_home"]) / "mcp-effects.jsonl"
+                if effects.exists():
+                    (output / f"mcp-{consent}-{owner}-effects.jsonl").write_text(effects.read_text())
     finally:
         for session in owned_sessions.values():
             with server._session_profile_runtime_scope(session, hydrate_secrets=False):
                 shutdown_mcp_servers(scope=session["profile_home"], names={"owned-probe"})
     import psutil
-    assert len(pids) == 2 and all(not psutil.pid_exists(pid) for pid in pids), pids
+    assert len(pids) == (3 if consent == "recovery-write" else 2), pids
+    assert all(not psutil.pid_exists(pid) for pid in pids), pids
 
 
 @pytest.mark.platforms("posix")
