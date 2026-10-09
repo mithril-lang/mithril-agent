@@ -601,8 +601,8 @@ def register(ctx):
 ```
 
 **What `register()` does:**
-- Called exactly once at startup
-- `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
+- Called when the plugin loads, including startup or an explicit reload
+- `ctx.register_tool()` adds your tool to the profile registry. A newly built conversation can expose it when its toolset is enabled and ready; an existing conversation keeps its frozen model-visible schema prefix.
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
@@ -1049,6 +1049,36 @@ ctx.register_tool(
     check_fn=lambda: _has_optional_lib(),  # False = tool hidden from model
 )
 ```
+
+### Partial effect and target declarations
+
+`ctx.register_tool(..., effect_manifest=...)` accepts the same optional,
+host-authored partial metadata as the registry:
+
+```python
+ctx.register_tool(
+    name="export_note", toolset="notes", schema=note_schema, handler=export_note,
+    effect_manifest={
+        "coverage": "partial",
+        "effects": ["file.write"],
+        "targets": [{"kind": "file-path", "argument": "/path",
+                     "resolution": "selected-terminal-runtime"}],
+    },
+)
+```
+
+The metadata is copied, limited to finite JSON and 8 KiB, and validated before
+registry/ownership ledger changes. It follows the same profile overlay and
+registration handle as the handler: reload replaces it, disposal restores an
+existing registration, and unload withdraws it. Malformed metadata fails plugin
+loading with normal cleanup. Existing plugins may omit it; their effects remain
+unknown rather than being inferred from tool names or MCP annotations.
+
+Owned runtime readback includes descriptors beside frozen model-visible schemas.
+Observed descriptor or registered-handler changes retire old approval context;
+model schemas/history are not rewritten. This declaration is not an execution
+grant, target resolver or complete effect audit. Operator override opt-in and
+provider/native readiness gates still apply.
 
 ### Overriding a built-in tool
 

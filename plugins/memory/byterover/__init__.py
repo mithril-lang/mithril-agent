@@ -158,6 +158,15 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "byterover"
 
+    def identity_signature(self) -> Dict[str, Any]:
+        # Cheap on uninitialized gateway instances; mutable data and secrets do
+        # not belong to route identity. The owned fence hashes these privately.
+        return {"byterover": {"cwd": self._cwd, "session_id": self._session_id}}
+
+    def bind_owned_tool_target(self, tool_name: str, args: Dict[str, Any], target):
+        from .owned_route import bind_route
+        return bind_route(self, target)
+
     def is_available(self) -> bool:
         """Check if brv CLI is installed. No network calls."""
         return _resolve_brv_path() is not None
@@ -188,9 +197,12 @@ class ByteRoverMemoryProvider(MemoryProvider):
 
     def _curate_in_background(self, content: str, *, name: str, what: str, on_done: str = "") -> threading.Thread:
         """Spawn a daemon thread that curates ``content``; failures are logged at debug, never raised."""
+        from .owned_route import capture_provider
+        selected = capture_provider(self)
+
         def _work():
             try:
-                self._curate(content)
+                selected._curate(content)
                 if on_done:
                     logger.info(on_done)
             except Exception as e:
@@ -253,7 +265,8 @@ class ByteRoverMemoryProvider(MemoryProvider):
         value = args.get(arg, "") if arg else None
         if arg and not value:
             return tool_error(f"{arg} is required")
-        result = run(self, value)
+        from .owned_route import operation_provider
+        result = run(operation_provider(self), value)
         return json.dumps(on_ok(result.get("output", ""))) if result["success"] else tool_error(result.get("error", fail_msg))
 
     def shutdown(self) -> None:

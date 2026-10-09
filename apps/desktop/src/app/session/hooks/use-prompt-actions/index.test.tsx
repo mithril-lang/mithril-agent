@@ -1203,12 +1203,18 @@ describe('usePromptActions exec fallback error reporting', () => {
     vi.restoreAllMocks()
   })
 
-  it('surfaces the slash.exec failure when command.dispatch only adds "not a quick/plugin/bundle/skill command"', async () => {
+  it.each([
+    new Error('slash worker timed out'),
+    new Error('socket closed after execution'),
+    new JsonRpcGatewayError('worker failed after execution', { code: 5030 }),
+    new JsonRpcGatewayError('quick command failed with exit code 1', { code: 4018 }),
+    new Error('skill command: use command.dispatch for /debug')
+  ])('does not redispatch when the slash worker result is unknown: %s', async failure => {
     const seeds: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'slash.exec') {
-        throw new Error('slash worker timed out')
+        throw failure
       }
 
       if (method === 'command.dispatch') {
@@ -1228,15 +1234,12 @@ describe('usePromptActions exec fallback error reporting', () => {
       />
     )
 
-    // /debug still goes through exec (no dedicated RPC), so it exercises the
-    // slash.exec → command.dispatch fallback + error unmasking path.
+    // /debug goes through exec; its timeout cannot prove the command did not run.
     await handle!.submitText('/debug')
 
-    // The dispatch fallback knowing nothing about /debug is routing noise;
-    // the worker timeout is what actually went wrong (#44456).
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'command.dispatch')).toHaveLength(0)
     const texts = renderedSeedTexts(seeds)
-    expect(texts.some(text => text.includes('slash worker timed out'))).toBe(true)
-    expect(texts.some(text => text.includes('skill command'))).toBe(false)
+    expect(texts.some(text => text.includes(failure.message))).toBe(true)
   })
 
   it('falls back to slash.exec when an older gateway lacks a dedicated RPC', async () => {
@@ -1276,7 +1279,7 @@ describe('usePromptActions exec fallback error reporting', () => {
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'slash.exec') {
-        throw new Error('skill command: use command.dispatch for /my-skill')
+        throw new JsonRpcGatewayError('skill command: use command.dispatch for /my-skill', { code: 4018 })
       }
 
       if (method === 'command.dispatch') {

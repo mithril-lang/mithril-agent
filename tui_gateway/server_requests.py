@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 class ServerRequest:
     __slots__ = ("id", "sid", "method", "params", "event", "result", "answered", "created_at",
-                 "qids", "locked", "on_result")
+                 "qids", "locked", "on_result", "scope")
 
     def __init__(self, sid: str, method: str, params: dict, *, qids: list[str] | None = None,
                  on_result: Callable[[dict | None], None] | None = None) -> None:
@@ -57,6 +57,7 @@ class ServerRequest:
         self.qids = list(qids) if qids else None
         self.locked: dict[str, str] = {}
         self.on_result = on_result
+        self.scope = _capture_scope(sid)
 
     def frame(self) -> dict:
         return {"jsonrpc": "2.0", "id": self.id, "method": self.method,
@@ -86,12 +87,14 @@ _answerable: Callable[[str], bool] = lambda sid: True  # noqa: E731
 # Client transports that sent ``client.capabilities {server_requests: true}`` (identity set: StdioTransport
 # has __slots__ and cannot be weak-referenced; ws.py forgets a peer on disconnect).
 _answering_clients: set = set()
+_capture_scope: Callable[[str], Any] = lambda sid: None  # noqa: E731
 
 
 def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, dict], Any],
-               answerable: Callable[[str], bool]) -> None:
-    global _write, _emit, _answerable
+               answerable: Callable[[str], bool], capture_scope: Callable[[str], Any] | None = None) -> None:
+    global _write, _emit, _answerable, _capture_scope
     _write, _emit, _answerable = write_json, emit, answerable
+    _capture_scope = capture_scope or (lambda sid: None)
 
 
 def advertise(transport: Any, server_requests: bool) -> None:
@@ -198,15 +201,26 @@ def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | 
     return settle
 
 
-def resolve_response(frame: dict) -> bool:
+def resolve_response(frame: dict, *, authorize: Callable[[str, Any], bool] | None = None) -> bool:
     """Route one client response frame to its open request. False when nothing is waiting for that id
     (already timed out / cancelled, or owned by another process — see the compute-host bridge)."""
     rid = frame.get("id")
     if not isinstance(rid, str):
         return False
     with _lock:
+        expected = _open.get(rid)
+    if expected is None:
+        return False
+    # Session/transport locks are taken outside this leaf lock. Recheck identity at commit.
+    if authorize is not None and not authorize(expected.sid, expected.scope):
+        return False
+    if authorize is not None and expected.method == "approval" and "error" not in frame:
+        result = frame.get("result")
+        if not isinstance(result, dict) or result.get("choice") not in expected.params.get("choices", []):
+            return False
+    with _lock:
         req = _open.get(rid)
-        if req is None:
+        if req is not expected:
             # Already settled (timed out, cancelled, answered from another surface) or owned by
             # another process; say so — a dropped answer used to vanish without a trace.
             logger.debug("server request %s: response dropped, request no longer open", rid)
@@ -236,13 +250,18 @@ def resolve_response(frame: dict) -> bool:
     return True
 
 
-def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | None:
+def lock_answer(request_id: str, question_id: str, answer: str, *,
+                authorize: Callable[[str, Any], bool] | None = None) -> list[str] | None:
     """Lock one batch-clarify answer (update-in-place). Returns the question ids still unanswered;
     the last lock resolves the request with the full ``{"answers"}`` set. ``None`` when no open
     batch has that id (expired or foreign); ``ValueError`` for an unknown question id."""
     with _lock:
+        expected = _open.get(request_id)
+    if expected is None or (authorize is not None and not authorize(expected.sid, expected.scope)):
+        return None
+    with _lock:
         req = _open.get(request_id)
-        if req is None or req.qids is None:
+        if req is not expected or req.qids is None:
             return None
         if question_id not in req.qids:
             raise ValueError(f"unknown question_id {question_id!r}")

@@ -1,4 +1,5 @@
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { shouldFallbackToDispatch } from '@hermes/shared/slash'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -12,7 +13,6 @@ import {
   lastStderrLine,
   promptTimeoutNotice,
   setRpcErrorLogSink,
-  shouldFallbackToDispatch,
   stderrLooksLikeProblem,
   stderrProblemActivity
 } from '../app/userMessages.js'
@@ -281,4 +281,16 @@ describe('locale-aware resolution', () => {
     expect(promptTimeoutNotice('sudo', 'timeout')).toBe('SUDO-XX')
     expect(describeTurnFailure({ error_surface: { code: 'auth', layer: 'auth' } }).split('\n')[0]).toBe('AUTH-XX // XX')
   })
+})
+
+// A code-less transport failure may follow a committed effect. Never route it again.
+it('refuses code-less failures and forged ownership text', () => {
+  for (const error of [
+    new Error('socket closed'),
+    new Error('response lost'),
+    new Error('skill command: use command.dispatch for /x'),
+    undefined
+  ]) {
+    expect(shouldFallbackToDispatch(error)).toBe(false)
+  }
 })

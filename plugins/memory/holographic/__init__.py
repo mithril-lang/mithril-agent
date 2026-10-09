@@ -115,6 +115,20 @@ class HolographicMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         return True  # SQLite is always available, numpy is optional
 
+    def identity_signature(self) -> Dict[str, Any]:
+        # Owned calls and built-in mirrors share this identity fence. The config
+        # path alone cannot detect replacement of an already opened destination.
+        def owner(store):
+            if store is None:
+                return None
+            return {"instance": id(store), "database": store._key,
+                    "connection": id(store._conn), "entry": id(store._entry)}
+
+        return {"configured_database": str(self._config.get("db_path", _DEFAULT_DB_PATH)),
+                "store": owner(self._store),
+                "retriever": None if self._retriever is None else {
+                    "instance": id(self._retriever), "store": owner(self._retriever.store)}}
+
     def save_config(self, values, hermes_home):
         """Write config to config.yaml under plugins.hermes-memory-store."""
         # The canonical writer: config lock, managed-mode refusal, default stripping, atomic replace.
@@ -176,15 +190,43 @@ class HolographicMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
 
+    def get_tool_effect_manifests(self) -> Dict[str, Any]:
+        # fact_store is one frozen tool covering both recall and CRUD. Describe
+        # that union; the exact action/arguments remain pinned by owned custody.
+        return {
+            "fact_store": {"coverage": "partial", "effects": ["memory.read", "memory.write"],
+                           "targets": [{"kind": "provider-memory", "argument": "/action",
+                                        "resolution": "selected-provider-operation"}]},
+            "fact_feedback": {"coverage": "partial", "effects": ["memory.read", "memory.write"],
+                              "targets": [{"kind": "provider-fact", "argument": "/fact_id",
+                                           "resolution": "selected-provider-fact-id"}]},
+        }
+
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        from .owned_target import operation_provider
+        selected = operation_provider(self)
         if tool_name not in self._TOOL_HANDLERS:
             return tool_error(f"Unknown tool: {tool_name}")
         try:
-            return self._TOOL_HANDLERS[tool_name](self, args)
+            return self._TOOL_HANDLERS[tool_name](selected, args)
         except KeyError as exc:
+            if (selected._store and selected._store._entry is not None
+                    and selected._store._entry.get("owned_transaction")):
+                selected._store._entry["owned_operation_error"] = True
             return tool_error(f"Missing required argument: {exc}")
         except Exception as exc:
+            if (selected._store and selected._store._entry is not None
+                    and selected._store._entry.get("owned_transaction")):
+                selected._store._entry["owned_operation_error"] = True
             return tool_error(str(exc))
+
+    def resolve_owned_tool_target(self, tool_name: str, args: Dict[str, Any]):
+        from .owned_target import resolve_target
+        return resolve_target(self, tool_name, args)
+
+    def bind_owned_tool_target(self, tool_name: str, args: Dict[str, Any], target):
+        from .owned_target import bind_target
+        return bind_target(self, tool_name, args, target)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # is_truthy_value: auto_extract is a string enum ("false"/"true"); plain truthiness would treat "false" as on.

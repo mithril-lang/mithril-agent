@@ -258,6 +258,9 @@ class MemoryStore:
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
                 return _read_failed_error(path)
+            from tools.memory_tool_revision import matches_review
+            if not matches_review(path, raw):
+                return _error("Saved memory changed since review; review it again. Nothing was applied.")
             bak = None if skip_drift else self._detect_external_drift(target, raw)
             self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
             if bak:
@@ -272,6 +275,24 @@ class MemoryStore:
             self._write_file(path, result[0])
             extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)
+
+    @contextmanager
+    def locked_review_snapshot(self, target: str):
+        """Yield the checked state and full entries while retaining writer custody."""
+        from tools.memory_tool_revision import state
+        if target not in {"memory", "user"}:
+            raise ValueError("Invalid memory review target.")
+        path = self._path_for(target)
+        with self._file_lock(path):
+            raw, read_ok = self._read_raw_checked(path)
+            if not read_ok:
+                raise OSError("Saved memory could not be read for review.")
+            yield {"state": state(path, raw), "entries": self._parse_entries(raw)}
+
+    def review_state(self, target: str):
+        """Capture data revision under the same lock used by every built-in writer."""
+        with self.locked_review_snapshot(target) as snapshot:
+            return snapshot["state"]
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -523,6 +544,8 @@ class MemoryStore:
         hold ``_file_lock`` (via ``_mutate``): a bare write from an earlier snapshot
         drops concurrent entries (#119668)."""
         try:
+            from tools.memory_tool_revision import advance
+            advance(path)
             atomic_write_text(path, ENTRY_DELIMITER.join(entries), tmp_prefix=".mem_")
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")

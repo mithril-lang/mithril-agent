@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
+from agent.inline_dispatch_binding import inline_target
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> Dict[str, str]:
@@ -115,11 +116,11 @@ def _tool(
 
 def _callback_tool(module: str, func: str, callback_attr: str, *arg_specs: _ArgSpec) -> InlineToolExecutor:
     """Executor for a GUI-callback tool: mapped args plus ``callback=getattr(agent, callback_attr, None)``."""
-    return _tool(module, func, *arg_specs, callback=lambda agent, ctx: getattr(agent, callback_attr, None))
+    return _tool(module, func, *arg_specs, callback=lambda agent, ctx: inline_target(agent, callback_attr))
 
 
 def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
-    session_db = agent._get_session_db_for_recall()
+    session_db = inline_target(agent, "_get_session_db_for_recall")()
     if not session_db:
         from hermes_state import format_session_db_unavailable
 
@@ -144,15 +145,17 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("action", "action"), ("target", "target", "memory"), ("content", "content"),
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
-        store=agent._memory_store,
+        store=inline_target(agent, "_memory_store"),
     )
     # Mirror built-in memory writes to external providers; gating lives in
     # MemoryManager.notify_memory_tool_write.
-    if agent._memory_manager:
-        agent._memory_manager.notify_memory_tool_write(
+    notify = inline_target(agent, "_memory_notify")
+    metadata = inline_target(agent, "_build_memory_write_metadata")
+    if notify:
+        notify(
             result,
             args,
-            build_metadata=lambda: agent._build_memory_write_metadata(
+            build_metadata=lambda: metadata(
                 task_id=ctx.effective_task_id,
                 tool_call_id=ctx.tool_call_id,
             ),
@@ -183,7 +186,7 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
 
     result = manage_connections(
         args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
-        connection_callback=getattr(agent, "connection_callback", None),
+        connection_callback=inline_target(agent, "connection_callback"),
         connectors_available=gateway_config.connectors_available,
     )
     _scope_in_connected_mcp_servers(agent, result)
@@ -217,7 +220,7 @@ def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
 
     return manage_catalog(
         args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
-        connection_callback=getattr(agent, "connection_callback", None),
+        connection_callback=inline_target(agent, "connection_callback"),
         card_surface=getattr(agent, "platform", None) == "desktop",
     )
 
@@ -235,7 +238,7 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
 INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "todo_list": _tool(
         "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
-        store=lambda agent, ctx: agent._todo_store,
+        store=lambda agent, ctx: inline_target(agent, "_todo_store"),
     ),
     # Bot Mode teammate DM is injected, not registered: only a canonical Bot
     # Chat session carries the schema, and the tool re-gates on the title.
@@ -249,7 +252,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.clarify_tool", "clarify_tool",
         ("question", "question", ""), ("choices", "choices"), ("multi_select", "multi_select", False),
         ("questions", "questions"),
-        callback=lambda agent, ctx: agent.clarify_callback,
+        callback=lambda agent, ctx: inline_target(agent, "clarify_callback"),
     ),
     "read_terminal": _callback_tool(
         "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",
@@ -276,7 +279,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
-    "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+    "delegate_task": lambda agent, args, ctx: inline_target(agent, "_dispatch_delegate_task")(args),
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three
@@ -286,16 +289,41 @@ INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES = frozenset({"todo_list", "session_search",
 
 
 def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineToolExecutor]:
-    """Inline executor for ``invoke_tool`` (concurrent path), or None for registry dispatch.
+    from agent.inline_dispatch_binding import resolve_bound_inline_executor
 
-    Precedence: todo_list/session_search/memory, then memory-manager tools, then the
-    remaining inline tools (``message_agent`` excluded).
+    executor, _ = select_invoke_tool_executor(agent, function_name)
+    return resolve_bound_inline_executor(agent, function_name, executor)
+
+
+def select_invoke_tool_executor(agent, function_name: str):
+    """Select an executor and host-local identity; registry routes have no executor.
+
+    Precedence: todo_list/session_search/memory, then context-engine-owned names,
+    then memory-manager tools, then the remaining inline tools (``message_agent``
+    excluded). Context engines do not replace existing inline executors.
     """
+    from agent.inline_dispatch_binding import callable_identity, memory_provider_identity, select_inline_targets
+
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
-        return INLINE_TOOL_EXECUTORS[function_name]
+        executor = INLINE_TOOL_EXECUTORS[function_name]
+        return select_inline_targets(agent, function_name, executor)
+    if (function_name not in INLINE_TOOL_EXECUTORS
+            and function_name in (getattr(agent, "_context_engine_tool_names", None) or ())):
+        engine = agent.context_compressor
+        handler = engine.handle_tool_call
+        return (lambda agent, args, ctx: handler(function_name, args, messages=ctx.messages),
+                ("context", id(engine), callable_identity(handler)))
     memory_manager = agent._memory_manager
     if memory_manager and memory_manager.has_tool(function_name):
-        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
+        resolve = getattr(memory_manager, "resolve_tool_dispatch", None)
+        if resolve is not None:
+            provider, handler, dispatch = resolve(function_name)
+            return (lambda agent, args, ctx: dispatch(args),
+                    ("memory", id(memory_manager), memory_provider_identity(provider), callable_identity(handler)))
+        handler = memory_manager.handle_tool_call
+        return (lambda agent, args, ctx: handler(function_name, args),
+                ("memory-manager", id(memory_manager), callable_identity(handler)))
     if function_name == "message_agent":
-        return None
-    return INLINE_TOOL_EXECUTORS.get(function_name)
+        return None, ("registry",)
+    executor = INLINE_TOOL_EXECUTORS.get(function_name)
+    return select_inline_targets(agent, function_name, executor) if executor else (None, ("registry",))

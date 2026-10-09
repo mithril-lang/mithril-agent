@@ -33,6 +33,43 @@ def _set_approval(subsystem, enabled):
 # Config resolution
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("subsystem", ["memory", "skills"])
+@pytest.mark.parametrize("landed", [False, True])
+def test_unconfirmed_pending_write_is_not_acknowledged_or_applied(hermes_home, monkeypatch, subsystem, landed):
+    from pathlib import Path
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore
+    import tools.skill_manager_tool  # noqa: F401
+    from tools.registry import registry
+
+    monkeypatch.setattr(wa, "evaluate_gate", lambda *a, **k: wa.GateDecision(stage=True))
+    original = wa.atomic_json_write
+    records = []
+
+    def lose_confirmation(path, record):
+        records.append(record)
+        if landed:
+            original(path, record)
+        raise OSError("private-storage-error-canary")
+
+    monkeypatch.setattr(wa, "atomic_json_write", lose_confirmation)
+    store = MemoryStore()
+    name = "memory" if subsystem == "memory" else "skill_manage"
+    args = {"action": "add", "target": "memory", "content": "pending canary"} if subsystem == "memory" else {
+        "action": "create", "name": "pending-canary", "content": "---\nname: pending-canary\ndescription: Canary.\n---\nReview."}
+    result = json.loads(registry.dispatch(name, args, store=store))
+    assert not result.get("staged") and result.get("success") is not True, result
+    assert "not confirmed" in result["error"]
+    assert "private-storage-error-canary" not in json.dumps(result)
+    assert len(records) == 1
+    assert (wa.get_pending(subsystem, records[0]["id"]) is not None) == landed
+    assert store.memory_entries == [] and not (Path(hermes_home) / "skills" / "pending-canary").exists()
+    monkeypatch.setattr(wa, "atomic_json_write", original)
+    fresh = json.loads(registry.dispatch(name, {**args, "content": "fresh review"}, store=store))
+    assert fresh["success"] and fresh["staged"] and fresh["pending_id"] != records[0]["id"]
+    assert wa.get_pending(subsystem, fresh["pending_id"]) is not None
+    assert store.memory_entries == [] and not (Path(hermes_home) / "skills" / "pending-canary").exists()
+
 def test_list_pending_skips_non_dict_record(hermes_home):
     """A parseable-but-non-object pending file must be skipped, not crash the sort."""
     from tools import write_approval as wa

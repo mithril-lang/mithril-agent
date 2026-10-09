@@ -10,6 +10,9 @@ session's own profile would build with; the launch profile's session still sees 
 
 from __future__ import annotations
 
+import os
+import threading
+
 import hermes_yaml as yaml
 import pytest
 
@@ -45,18 +48,29 @@ def two_homes(tmp_path, monkeypatch):
         "launch": {"agent": None, "profile_home": None, "cwd": str(tmp_path), "source": "tui"},
         "work": {"agent": None, "profile_home": str(worker), "cwd": str(tmp_path), "source": "tui"},
     }
+    from tui_gateway.transport import StdioTransport
+    for session in sessions.values():
+        session["transport"] = StdioTransport(lambda: None, threading.Lock())
     monkeypatch.setattr(server, "_sessions", sessions)
     return sessions
 
 
 def _enabled(sid: str) -> set[str]:
-    resp = server._methods["tools.list"]("rid", {"session_id": sid})
+    token = server.bind_transport(server._sessions[sid]["transport"])
+    try:
+        resp = server._methods["tools.list"]("rid", {"session_id": sid})
+    finally:
+        server.reset_transport(token)
     assert "error" not in resp, resp
     return {row["name"] for row in resp["result"]["toolsets"] if row["enabled"]}
 
 
 def _sections(sid: str) -> set[str]:
-    resp = server._methods["tools.show"]("rid", {"session_id": sid})
+    token = server.bind_transport(server._sessions[sid]["transport"])
+    try:
+        resp = server._methods["tools.show"]("rid", {"session_id": sid})
+    finally:
+        server.reset_transport(token)
     assert "error" not in resp, resp
     return {section["name"] for section in resp["result"]["sections"]}
 
@@ -79,3 +93,114 @@ def test_tools_show_sections_follow_the_sessions_pin(two_homes):
     work, launch = _sections("work"), _sections("launch")
     assert "file" in work and "terminal" not in work, sorted(work)
     assert "terminal" in launch and "file" not in launch, sorted(launch)
+
+
+@pytest.mark.parametrize("method", ["tools.list", "toolsets.list", "tools.show"])
+def test_tool_readback_requires_live_transport_membership(two_homes, method):
+    """A public session id is not read authority; detachment/id reuse revokes it."""
+    original = two_homes["work"]
+    token = server.bind_transport(two_homes["launch"]["transport"])
+    try:
+        rejected = server._methods[method]("rid", {"session_id": "work"})
+        assert rejected.get("error", {}).get("code") == 4001, rejected
+    finally:
+        server.reset_transport(token)
+    token = server.bind_transport(original["transport"])
+    generation = server._current_runtime_session_record.set(original)
+    try:
+        accepted = server._methods[method]("rid", {"session_id": "work"})
+        assert "result" in accepted, accepted
+        two_homes["work"] = dict(original)
+        rejected = server._methods[method]("rid", {"session_id": "work"})
+        assert rejected.get("error", {}).get("code") == 4001, rejected
+        two_homes["work"] = original
+    finally:
+        server._current_runtime_session_record.reset(generation)
+        server.reset_transport(token)
+    rejected = server._methods[method]("rid", {"session_id": "missing"})
+    assert rejected.get("error", {}).get("code") == 4001, rejected
+
+
+def test_tool_schema_resolution_uses_each_sessions_secret_home(two_homes, monkeypatch):
+    """The real definition resolver runs under home + secrets, not just config lookup."""
+    import model_tools
+    from agent.secret_scope import get_secret
+
+    launch_home = server._hermes_home
+    worker_home = launch_home / "profiles" / "work"
+    for home, value in ((launch_home, "launch-only"), (worker_home, "worker-only")):
+        (home / ".env").write_text(f"TOOL_SCOPE_FIXTURE={value}\n", encoding="utf-8")
+    monkeypatch.delenv("TOOL_SCOPE_FIXTURE", raising=False)
+    original = model_tools.get_tool_definitions
+    observed = []
+
+    def resolve(*args, **kwargs):
+        observed.append(get_secret("TOOL_SCOPE_FIXTURE"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", resolve)
+    before = dict(os.environ)
+    work, launch, work_again = _sections("work"), _sections("launch"), _sections("work")
+    assert work == work_again and "file" in work and "terminal" in launch
+    assert observed == ["worker-only", "launch-only", "worker-only"]
+    assert dict(os.environ) == before
+
+
+def test_rpc_snapshot_tracks_published_schemas_and_owned_agent_generation(two_homes):
+    import copy
+    from types import SimpleNamespace
+    import model_tools
+    from tools.mcp_tool_agent import _agent_tools_lock
+
+    for sid, enabled in (("launch", LAUNCH_PIN), ("work", WORKER_PIN)):
+        session = two_homes[sid]
+        with server._session_profile_runtime_scope(session):
+            definitions = model_tools.get_tool_definitions(
+                enabled_toolsets=enabled, quiet_mode=True)
+        session["agent"] = SimpleNamespace(tools=definitions, enabled_toolsets=enabled,
+                                           disabled_toolsets=None, _tool_snapshot_generation=7,
+                                           _memory_manager=None)
+
+    def snapshot(sid):
+        token = server.bind_transport(two_homes[sid]["transport"])
+        try:
+            response = server._methods["tools.show"]("rid", {"session_id": sid})
+        finally:
+            server.reset_transport(token)
+        assert "result" in response, response
+        result = response["result"]
+        assert {d["function"]["name"] for d in result["discovery_definitions"]} == {
+            tool["name"] for section in result["sections"] for tool in section["tools"]}
+        assert len(result["discovery_definitions"]) == result["total"]
+        return response["result"]["runtime_snapshot"]
+
+    work, launch, repeated = snapshot("work"), snapshot("launch"), snapshot("work")
+    assert work == repeated and work["context_id"] != launch["context_id"]
+    assert work["definitions"] == two_homes["work"]["agent"].tools
+    assert work["coverage"] == "model-visible-only" and work["registry_generation"] == 7
+    # Returned schemas are copies; neither a client nor a concurrent publication
+    # can mutate an earlier snapshot or the conversation's frozen prefix.
+    original = copy.deepcopy(work)
+    work["definitions"][0]["function"]["parameters"]["description"] = "client mutation"
+    assert snapshot("work") == original
+    with _agent_tools_lock:
+        agent = two_homes["work"]["agent"]
+        agent.tools = copy.deepcopy(agent.tools)
+        agent.tools[0]["function"]["parameters"]["description"] = "published schema change"
+        agent._tool_snapshot_generation += 1
+    changed = snapshot("work")
+    assert changed["revision"] != original["revision"]
+    assert changed["context_id"] == original["context_id"]
+    assert changed["registry_generation"] == 8
+    two_homes["work"]["agent"] = copy.deepcopy(agent)
+    replaced = snapshot("work")
+    assert replaced["revision"] == changed["revision"]
+    assert replaced["context_id"] != changed["context_id"]
+    two_homes["work"]["profile_home"] = None
+    rehomed = snapshot("work")
+    assert rehomed["context_id"] != replaced["context_id"]
+    assert rehomed["revision"] == replaced["revision"]
+    two_homes["work"]["agent"] = None
+    unbuilt = snapshot("work")
+    assert unbuilt["status"] == "not-built" and unbuilt["definitions"] == []
+    assert unbuilt["context_id"] is None and unbuilt["revision"] is None

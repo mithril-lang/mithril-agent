@@ -180,6 +180,7 @@ _LONG_HANDLERS = frozenset({
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
+    "tools.call",  # tool/approval waits must not block the reader or session.interrupt
 })
 
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
@@ -682,10 +683,24 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
+def _server_request_scope(sid: str):
+    session = _sessions.get(sid)
+    return (session, session.get("profile_home"), session.get("session_key")) if session is not None else None
+
+
+def _client_server_request_authority(sid: str, scope) -> bool:
+    transport, session = _current_session_steer_authority(sid)
+    if (scope is None or session is not scope[0] or session.get("profile_home") != scope[1]
+            or session.get("session_key") != scope[2]):
+        return False
+    owner, actor = _session_auth_user_id(session), _transport_auth_user_id(transport)
+    return owner is None or actor is None or owner == actor
+
+
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
-                            lambda sid: _session_client_answers_requests(sid))
+                            lambda sid: _session_client_answers_requests(sid), _server_request_scope)
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -3488,7 +3503,10 @@ from . import (  # noqa: E402
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
-    methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
+    methods_tools as _methods_tools, methods_tool_attempts as _methods_tool_attempts,
+    methods_tool_call as _methods_tool_call,
+    methods_tool_targets as _methods_tool_targets,
+    prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
@@ -3503,7 +3521,8 @@ for _m in (
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
-    _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
+    _methods_config_set, _methods_complete, _methods_tools, _methods_tool_attempts, _methods_tool_call, _methods_tool_targets,
+    _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,

@@ -9,6 +9,7 @@ Every ``mcp.servers.*``, ``mcp.catalog``, ``skills.manage`` and ``plugins.manage
 from __future__ import annotations
 
 from pydantic import Field
+from typing import Literal
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionLiveInfo
@@ -17,8 +18,8 @@ from .registry import method
 
 
 class _SessionScoped(Params):
-    """Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an
-    absent / unknown id falls back to the launch profile's config, so it is never required."""
+    """Optional session readback. Explicit ids require live transport membership;
+    an omitted id reads launch-profile settings. Unknown ids are rejected."""
 
     session_id: str | None = None
 
@@ -58,9 +59,29 @@ class ToolShowSection(Result):
     tools: list[ToolShowRow]
 
 
+class SessionToolSnapshot(Result):
+    """Actual model-visible schemas, not a grant or a complete deferred-tool manifest.
+    Revision is server-local content identity, not the shared schemaHash algorithm.
+    """
+
+    protocol: Literal["hermes-session-tool-snapshot-v1"]
+    status: Literal["built", "not-built"]
+    coverage: Literal["model-visible-only"]
+    context_id: str | None
+    revision: str | None
+    registry_generation: int | None
+    definitions: list[dict[str, JsonValue]]
+    effect_manifests: list[dict[str, JsonValue]] = []
+
+
 class ToolsShowResult(Result):
+    """Profile-resolved discovery includes deferred tools; runtime_snapshot is
+    the separate, frozen model-visible array. Neither establishes admission.
+    """
     sections: list[ToolShowSection]
     total: int
+    discovery_definitions: list[dict[str, JsonValue]]
+    runtime_snapshot: SessionToolSnapshot
 
 
 method("tools.show", params=_SessionScoped, result=ToolsShowResult,

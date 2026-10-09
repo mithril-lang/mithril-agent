@@ -3841,7 +3841,7 @@ export interface BrowserManageResult {
   url?: string | null
   messages?: string[] | null
 }
-/** Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an absent / unknown id falls back to the launch profile's config, so it is never required. */
+/** Optional session readback. Explicit ids require live transport membership; an omitted id reads launch-profile settings. Unknown ids are rejected. */
 export interface _SessionScoped {
   session_id?: string | null
 }
@@ -3856,9 +3856,12 @@ export interface ToolsetRow {
   enabled: boolean
   tools?: string[] | null
 }
+/** Profile-resolved discovery includes deferred tools; runtime_snapshot is the separate, frozen model-visible array. Neither establishes admission. */
 export interface ToolsShowResult {
   sections: ToolShowSection[]
   total: number
+  discovery_definitions: Record<string, unknown>[]
+  runtime_snapshot: SessionToolSnapshot
 }
 export interface ToolShowSection {
   name: string
@@ -3867,6 +3870,17 @@ export interface ToolShowSection {
 export interface ToolShowRow {
   name: string
   description: string
+}
+/** Actual model-visible schemas, not a grant or a complete deferred-tool manifest. Revision is server-local content identity, not the shared schemaHash algorithm. */
+export interface SessionToolSnapshot {
+  protocol: 'hermes-session-tool-snapshot-v1'
+  status: 'built' | 'not-built'
+  coverage: 'model-visible-only'
+  context_id: string | null
+  revision: string | null
+  registry_generation: number | null
+  definitions: Record<string, unknown>[]
+  effect_manifests?: Record<string, unknown>[]
 }
 /** ``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's profile is authoritative and its agent is rebuilt. */
 export interface ToolsConfigureParams {
@@ -4311,6 +4325,65 @@ export interface OnboardingCatalogPlugin {
   platforms: string[]
   app_state: CatalogAppState
   sentence: string
+}
+export interface ToolAttemptsParams {
+  session_id: string
+  limit?: number
+  before_attempt_id?: string | null
+}
+export interface ToolAttemptsResult {
+  protocol: 'hermes-tool-attempts-v1'
+  coverage: 'exact-session-metadata-only'
+  available: boolean
+  attempts: ToolAttemptRow[]
+  next_cursor: string | null
+}
+export interface ToolAttemptRow {
+  attempt_id: string
+  parent_call_id: string
+  tool_name: string
+  state: 'pending' | 'running' | 'blocked' | 'rejected' | 'not-dispatched' | 'returned' | 'returned-error'
+  terminal: boolean
+  created_at: number
+  dispatched_at: number | null
+  settled_at: number | null
+  result_digest: string | null
+  result_bytes: number | null
+}
+export interface ToolsCallParams {
+  session_id: string
+  name: string
+  arguments: Record<string, unknown>
+  request_id: string
+  context_id: string
+  revision: string
+  timeout_ms?: number
+  target_digest?: string | null
+}
+export interface ToolsCallResult {
+  protocol: 'hermes-owned-tool-call-v1'
+  attempt_id: string
+  state: 'pending' | 'running' | 'blocked' | 'rejected' | 'not-dispatched' | 'returned' | 'returned-error'
+  terminal: boolean
+  duplicate: boolean
+  observation: 'handler-return' | 'policy-result' | 'metadata-only' | 'unknown'
+  output: unknown | null
+}
+export interface ToolsTargetPreviewParams {
+  session_id: string
+  name: string
+  arguments: Record<string, unknown>
+  context_id: string
+  revision: string
+}
+export interface ToolsTargetPreviewResult {
+  protocol: 'hermes-owned-target-preview-v1'
+  target_binding: ToolTargetBinding | null
+}
+export interface ToolTargetBinding {
+  coverage: 'partial'
+  digest: string
+  target: unknown
 }
 /** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
 export interface ClarifyRequestParams {
@@ -5312,12 +5385,18 @@ export interface RpcMethods {
   'system.battery': { params: SystemBatteryParams; result: SystemBatteryResult }
   /** Record the client's column width for server-side rendering. */
   'terminal.resize': { params: TerminalResizeParams; result: TerminalResizeResult }
+  /** Read a bounded owned session attempt page; handler return is not delivery or confirmed stop. */
+  'tools.attempts': { params: ToolAttemptsParams; result: ToolAttemptsResult }
+  /** Invoke one tool through the attached agent policy without model inference; replay returns metadata only. */
+  'tools.call': { params: ToolsCallParams; result: ToolsCallResult }
   /** Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now. */
   'tools.configure': { params: ToolsConfigureParams; result: ToolsConfigureResult }
   /** Every toolset with its resolved tool names, flagged against the session's (or config's) enabled set. */
   'tools.list': { params: _SessionScoped; result: ToolsetsListResult }
   /** The /tools listing grouped by toolset, including tools deferred behind the tool_search bridge. */
   'tools.show': { params: _SessionScoped; result: ToolsShowResult }
+  /** Resolve a partial target for exact owned arguments without invoking the handler; never a grant. */
+  'tools.target_preview': { params: ToolsTargetPreviewParams; result: ToolsTargetPreviewResult }
   /** Toolset summaries (no tool names) for the desktop Toolsets tab. */
   'toolsets.list': { params: _SessionScoped; result: ToolsetsListResult }
   /** Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable. */
@@ -5588,9 +5667,12 @@ export const RPC_METHODS = [
   'subscription.upgrade',
   'system.battery',
   'terminal.resize',
+  'tools.attempts',
+  'tools.call',
   'tools.configure',
   'tools.list',
   'tools.show',
+  'tools.target_preview',
   'toolsets.list',
   'usage.bars',
   'vault.add',

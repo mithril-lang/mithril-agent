@@ -54,8 +54,10 @@ backend (env-bound) and as a secondary served by one process (override-bound).
   skill/quick command from completions even though they executed when typed).
 - Dispatch: `app/session/hooks/use-prompt-actions/slash.ts` (`runSlash`) — desktop-owned built-ins
   (`/skin`, `/help`, `/new`, ...) locally or via `commands.catalog`; everything else `slash.exec` →
-  `command.dispatch` fallback; a skill command resolves to `{type: "skill", message}` and is
+  `command.dispatch` only after a structured 4018 exact pre-execution ownership refusal; a skill command resolves to `{type: "skill", message}` and is
   submitted as a normal prompt.
+
+`apps/shared/src/slash.ts::shouldFallbackToDispatch` owns this rule for Desktop and TUI. Result loss, timeout, disconnect, generic 4018 and code-less text never authorize another execution route. Successful-response processing is outside the RPC rejection handler.
 
 **Rule:** palette curation hides noise (terminal-only / messaging-only built-ins), NEVER
 user-activated extensions. If you tighten `desktop-slash-commands.ts`, keep

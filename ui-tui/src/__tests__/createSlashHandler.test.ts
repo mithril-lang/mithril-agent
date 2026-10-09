@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { JsonRpcGatewayError, JsonRpcRequestChannel } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
@@ -727,14 +727,16 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).not.toHaveBeenCalledWith('too late')
   })
 
-  it('dispatches command.dispatch with typed alias', async () => {
+  it('follows a typed alias after a structured ownership refusal', async () => {
     const ctx = buildCtx({
       gateway: {
         gw: {
           getLogTail: vi.fn(() => ''),
           request: vi.fn((method: string) => {
             if (method === 'slash.exec') {
-              return Promise.reject(new Error('no'))
+              return Promise.reject(
+                new JsonRpcGatewayError('skill command: use command.dispatch for /zzz', { code: 4018 })
+              )
             }
 
             if (method === 'command.dispatch') {
@@ -821,7 +823,9 @@ describe('createSlashHandler', () => {
           getLogTail: vi.fn(() => ''),
           request: vi.fn((method: string) => {
             if (method === 'slash.exec') {
-              return Promise.reject(new Error('skill command: use command.dispatch'))
+              return Promise.reject(
+                new JsonRpcGatewayError('skill command: use command.dispatch for /hermes-agent-dev', { code: 4018 })
+              )
             }
 
             if (method === 'command.dispatch') {
@@ -882,6 +886,89 @@ describe('createSlashHandler', () => {
     expect(line).toMatch(/timed out/)
     expect(line).not.toMatch(/quick\/plugin\/bundle\/skill/)
   })
+
+  it.each(['lost-result', 'explicit-refusal', 'retired-refusal', 'render-failure'] as const)(
+    'qualifies transport routing with one effect: %s',
+    async mode => {
+      patchUiState({ sid: 'owned' })
+      const channel = new JsonRpcRequestChannel()
+      const methods: string[] = []
+      let signalDelivered!: () => void
+
+      const delivered = new Promise<void>(resolve => {
+        signalDelivered = resolve
+      })
+
+      let effects = 0
+      channel.attach({
+        send: text => {
+          const frame = JSON.parse(text)
+          methods.push(frame.method)
+
+          if (mode === 'lost-result') {
+            effects += 1
+            queueMicrotask(() => {
+              channel.detach(new Error('socket closed after execution'))
+              signalDelivered()
+            })
+
+            return
+          }
+
+          const reply =
+            frame.method === 'slash.exec' && mode !== 'render-failure'
+              ? { error: { code: 4018, message: 'skill command: use command.dispatch for /owned-fixture' } }
+              : { result: { type: 'exec', output: 'committed once' } }
+
+          if (frame.method === 'command.dispatch' || mode === 'render-failure') {
+            effects += 1
+          }
+
+          queueMicrotask(() => {
+            channel.handleFrame(JSON.stringify({ id: frame.id, jsonrpc: '2.0', ...reply }))
+            signalDelivered()
+          })
+        }
+      })
+
+      const ctx = buildCtx({
+        gateway: {
+          gw: {
+            getLogTail: vi.fn(() => ''),
+            request: vi.fn((method: string, params: Record<string, unknown>) =>
+              method === 'shared_metrics.slash_command' ? Promise.resolve({}) : channel.request(method, params)
+            )
+          },
+          rpc: vi.fn(() => Promise.resolve({}))
+        }
+      })
+
+      if (mode === 'render-failure') {
+        ctx.transcript.sys.mockImplementationOnce(() => {
+          throw new JsonRpcGatewayError('skill command: use command.dispatch for /owned-fixture', { code: 4018 })
+        })
+      }
+
+      expect(createSlashHandler(ctx)('/owned-fixture')).toBe(true)
+
+      if (mode === 'retired-refusal') {
+        patchUiState({ sid: 'foreign' })
+      }
+
+      await delivered
+
+      if (mode !== 'retired-refusal') {
+        await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+      } else {
+        expect(ctx.transcript.sys).not.toHaveBeenCalled()
+      }
+
+      expect(effects).toBe(mode === 'retired-refusal' ? 0 : 1)
+      expect(methods).toEqual(mode === 'explicit-refusal' ? ['slash.exec', 'command.dispatch'] : ['slash.exec'])
+      expect(ctx.transcript.send).not.toHaveBeenCalled()
+      channel.detach()
+    }
+  )
 
   it('still falls back to command.dispatch on a 4018 "not mine" refusal', async () => {
     patchUiState({ sid: 'sid-abc' })
@@ -1054,7 +1141,11 @@ describe('createSlashHandler', () => {
           getLogTail: vi.fn(() => ''),
           kill: vi.fn(),
           request: vi.fn((method: string) =>
-            method === 'slash.exec' ? Promise.reject(new Error('skill command')) : Promise.resolve({})
+            method === 'slash.exec'
+              ? Promise.reject(
+                  new JsonRpcGatewayError('skill command: use command.dispatch for /pr-triage', { code: 4018 })
+                )
+              : Promise.resolve({})
           )
         },
         rpc: vi.fn(() => Promise.resolve({}))

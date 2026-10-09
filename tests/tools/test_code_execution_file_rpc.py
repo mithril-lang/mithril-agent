@@ -60,7 +60,7 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
             result = subprocess.run([shell, "-c", command], cwd=cwd, timeout=timeout,
                                     env=dict(os.environ), input=stdin_data or "", capture_output=True, text=True)
             assert result.returncode == 0, result.stderr
-            return {"output": result.stdout}
+            return {"output": result.stdout, "returncode": result.returncode}
 
     stop = threading.Event()
     budget = len(CALLS) + 8
@@ -97,3 +97,78 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
         stop.set()
         poller.join(timeout=10)
         assert not poller.is_alive()
+
+
+@pytest.mark.platforms("posix")
+def test_file_rpc_claim_survives_result_delivery_failure_without_reexecuting(tmp_path, monkeypatch):
+    from pm.shell import bash
+    import model_tools
+    import tools.file_tools  # noqa: F401
+
+    shell = bash()
+    rpc = tmp_path / "rpc with spaces"
+    rpc.mkdir()
+    source = tmp_path / "owned-data.txt"
+    source.write_text("owned fixture", encoding="utf-8")
+    stop = threading.Event()
+    scans = 0
+    delivery_failed = threading.Event()
+    seen = []
+    original_dispatch = model_tools.handle_function_call
+
+    def dispatch(name, args, **kwargs):
+        result = original_dispatch(name, args, **kwargs)
+        seen.append(json.loads(result))
+        return result
+
+    monkeypatch.setattr(model_tools, "handle_function_call", dispatch)
+
+    class Shell:
+        def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+            nonlocal scans
+            if "base64 -d" in command:
+                delivery_failed.set()
+                raise OSError("fixture result transport failed")
+            if command.startswith("ls -1"):
+                scans += 1
+                if scans >= 3:
+                    stop.set()
+            result = subprocess.run([shell, "-c", command], cwd=cwd, timeout=timeout,
+                                    input=stdin_data or "", capture_output=True, text=True)
+            return {"output": result.stdout, "returncode": result.returncode}
+
+    (rpc / "req_000001").write_text(json.dumps({"seq": 1, "token": "owned-token",
+        "tool": "read_file", "args": {"path": str(source)}}), encoding="utf-8")
+    log, counter = [], [0]
+    poller = threading.Thread(target=_rpc_poll_loop, args=(Shell(), str(rpc), "owned-task", log,
+        counter, 8, frozenset({"read_file"}), stop, "owned-token"), daemon=True)
+    poller.start()
+    try:
+        poller.join(timeout=10)
+        assert not poller.is_alive()
+        assert delivery_failed.is_set() and scans >= 3
+        assert len(seen) == 1 and counter == [1] and len(log) == 1
+        assert "owned fixture" in json.dumps(seen[0]) and "error" not in seen[0]
+        assert not (rpc / "req_000001").exists()
+        assert not (rpc / "res_000001").exists()  # delivery is not falsely marked complete
+        assert (rpc / "dispatch_000001" / "request").exists()
+        assert (rpc / "dispatch_000001").stat().st_mode & 0o777 == 0o700
+        # Restarting the poller and resetting its in-memory budget must not
+        # turn a reintroduced same-sequence request into another execution.
+        scans = 0
+        stop.clear()
+        delivery_failed.clear()
+        seen.clear()
+        counter[0] = 0
+        log.clear()
+        (rpc / "req_000001").write_text(json.dumps({"seq": 1, "token": "owned-token",
+            "tool": "read_file", "args": {"path": str(source)}}), encoding="utf-8")
+        poller = threading.Thread(target=_rpc_poll_loop, args=(Shell(), str(rpc), "owned-task", log,
+            counter, 8, frozenset({"read_file"}), stop, "owned-token"), daemon=True)
+        poller.start()
+        poller.join(timeout=10)
+        assert not poller.is_alive() and scans >= 3
+        assert seen == [] and counter == [0] and log == [] and not delivery_failed.is_set()
+    finally:
+        stop.set()
+        poller.join(timeout=10)

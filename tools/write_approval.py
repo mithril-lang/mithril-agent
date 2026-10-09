@@ -70,21 +70,31 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
-def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str) -> Dict[str, Any]:
+def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str,
+                memory_route: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
-    Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
-    the safe failure for an approval gate (nothing silently committed)."""
+    A persistence error cannot acknowledge a staged proposal. It may have landed before
+    confirmation failed, so the caller must inspect pending state instead of automatically
+    recreating it. The exception prevents the gated direct write from proceeding."""
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
         "summary": (summary or "").strip(), "origin": origin or "foreground",
         "created_at": time.time(), "payload": payload,
     }
+    if memory_route is not None:
+        record["memory_route"] = dict(memory_route)
     try:
-        atomic_json_write(_pending_path(subsystem, pid), record)
-    except Exception as e:  # pragma: no cover - disk failure path
+        from tools.write_approval_decisions import pending_decision_lock, decision_receipt
+        with pending_decision_lock(subsystem, pid):
+            if get_pending(subsystem, pid) is not None or decision_receipt(subsystem, pid) is not None:
+                raise OSError("Pending proposal identity already exists; nothing was overwritten.")
+            atomic_json_write(_pending_path(subsystem, pid), record)
+    except Exception as e:
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+        raise OSError(f"Pending {subsystem} write {pid} persistence is not confirmed; "
+                      f"inspect /{subsystem} pending before recreating it.") from None
     return record
 
 
@@ -118,10 +128,13 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
 def discard_pending(subsystem: str, pending_id: str) -> bool:
     """Delete a pending record. Returns True if it existed."""
     try:
-        path = _pending_path(subsystem, pending_id)
-        if path.exists():
-            path.unlink()
-            return True
+        from tools.write_approval_decisions import pending_decision_lock, decision_receipt
+        with pending_decision_lock(subsystem, pending_id) as path:
+            if decision_receipt(subsystem, pending_id) is not None:
+                return False  # Never discard another consumer's in-flight or uncertain effect.
+            if path.exists():
+                path.unlink()
+                return True
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False

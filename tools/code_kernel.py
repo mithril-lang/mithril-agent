@@ -264,7 +264,7 @@ class CellAuthority:
         return self.ctx.run(self._invoke, tool_name, tool_args)
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
-        from model_tools import handle_function_call
+        from tools.code_execution_rpc import _default_dispatch
         previous = None
         if self._callbacks:
             try:
@@ -274,7 +274,7 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            return _default_dispatch(self.task_id)(tool_name, tool_args)
         finally:
             if previous is not None:
                 try:
@@ -306,6 +306,8 @@ class SessionKernel:
     """One live kernel process plus its RPC server and reader threads."""
 
     def __init__(self, key: Tuple):
+        from hermes_constants import hermes_home_key
+        self.profile_home = hermes_home_key()
         self.key, self.owner, self.lock = key, key[0], threading.Lock()
         self.proc: Optional[subprocess.Popen] = None
         self.tmpdir = self.rpc_token = self.sentinel = ""
@@ -369,12 +371,17 @@ class KernelRegistry:
         self.lock, self._teardown = threading.Lock(), teardown
 
     def shutdown(self, owner: Optional[str] = None, *, owner_matches: Optional[Callable[[str], bool]] = None) -> None:
-        """Tear down every kernel, every kernel one owner (key[0]) holds, or every kernel whose owner
-        satisfies ``owner_matches``."""
+        """Global shutdown has no selector. Owner/child selection is restricted
+        to the calling profile: identical session ids in other homes are foreign."""
+        from hermes_constants import hermes_home_key
+        all_profiles = owner is None and owner_matches is None
+        scope = None if all_profiles else hermes_home_key()
         with self.lock:
             doomed = [self.kernels.pop(key) for key in list(self.kernels)
-                      if (owner is None and owner_matches is None) or key[0] == owner
-                      or (owner_matches is not None and owner_matches(key[0]))]
+                      if all_profiles or (
+                          self.kernels[key].profile_home == scope and
+                          (key[0] == owner or (owner_matches is not None and owner_matches(key[0])))
+                      )]
         for kernel in doomed:
             self._teardown(kernel)
 
@@ -851,9 +858,14 @@ def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
 ) -> str:
-    """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
+    """Run one cell in the (profile, owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
-    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
+    from hermes_constants import hermes_home_key
+    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, hermes_home_key(), tuple(sorted(sandbox_tools)))
+    from tools.terminal_tool import resolve_task_overrides
+    runtime_context = resolve_task_overrides(task_id).get("_owned_runtime_context")
+    if runtime_context:
+        key += (runtime_context,)
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())

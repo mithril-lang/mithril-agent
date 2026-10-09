@@ -4129,6 +4129,42 @@
       }
     },
     {
+      "name": "tools.attempts",
+      "summary": "Read a bounded owned session attempt page; handler return is not delivery or confirmed stop.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ToolAttemptsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ToolAttemptsResult"
+        }
+      }
+    },
+    {
+      "name": "tools.call",
+      "summary": "Invoke one tool through the attached agent policy without model inference; replay returns metadata only.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ToolsCallParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ToolsCallResult"
+        }
+      }
+    },
+    {
       "name": "tools.configure",
       "summary": "Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now.",
       "params": [
@@ -4179,6 +4215,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ToolsShowResult"
+        }
+      }
+    },
+    {
+      "name": "tools.target_preview",
+      "summary": "Resolve a partial target for exact owned arguments without invoking the handler; never a grant.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ToolsTargetPreviewParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ToolsTargetPreviewResult"
         }
       }
     },
@@ -31509,6 +31563,91 @@
         "title": "SessionTitleResult",
         "type": "object"
       },
+      "SessionToolSnapshot": {
+        "additionalProperties": false,
+        "description": "Actual model-visible schemas, not a grant or a complete deferred-tool manifest.\nRevision is server-local content identity, not the shared schemaHash algorithm.",
+        "properties": {
+          "protocol": {
+            "const": "hermes-session-tool-snapshot-v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "built",
+              "not-built"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "coverage": {
+            "const": "model-visible-only",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "context_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "registry_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registry Generation"
+          },
+          "definitions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "effect_manifests": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Effect Manifests",
+            "type": "array"
+          }
+        },
+        "required": [
+          "protocol",
+          "status",
+          "coverage",
+          "context_id",
+          "revision",
+          "registry_generation",
+          "definitions"
+        ],
+        "title": "SessionToolSnapshot",
+        "type": "object"
+      },
       "SessionUndoParams": {
         "additionalProperties": false,
         "properties": {
@@ -35540,6 +35679,185 @@
         "title": "TodoUpdatedPayload",
         "type": "object"
       },
+      "ToolAttemptRow": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "parent_call_id": {
+            "title": "Parent Call Id",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "running",
+              "blocked",
+              "rejected",
+              "not-dispatched",
+              "returned",
+              "returned-error"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispatched At"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At"
+          },
+          "result_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Digest"
+          },
+          "result_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Bytes"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "parent_call_id",
+          "tool_name",
+          "state",
+          "terminal",
+          "created_at",
+          "dispatched_at",
+          "settled_at",
+          "result_digest",
+          "result_bytes"
+        ],
+        "title": "ToolAttemptRow",
+        "type": "object"
+      },
+      "ToolAttemptsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "before_attempt_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Before Attempt Id"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ToolAttemptsParams",
+        "type": "object"
+      },
+      "ToolAttemptsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol": {
+            "const": "hermes-tool-attempts-v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "coverage": {
+            "const": "exact-session-metadata-only",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ToolAttemptRow"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "protocol",
+          "coverage",
+          "available",
+          "attempts",
+          "next_cursor"
+        ],
+        "title": "ToolAttemptsResult",
+        "type": "object"
+      },
       "ToolCompletePayload": {
         "additionalProperties": false,
         "description": "``tool_progress._on_tool_complete``; ``todos``/``revision`` merged in for the todo tools.",
@@ -35897,6 +36215,31 @@
         "title": "ToolStartPayload",
         "type": "object"
       },
+      "ToolTargetBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "const": "partial",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target"
+          }
+        },
+        "required": [
+          "coverage",
+          "digest",
+          "target"
+        ],
+        "title": "ToolTargetBinding",
+        "type": "object"
+      },
       "ToolsAction": {
         "enum": [
           "enable",
@@ -35904,6 +36247,141 @@
         ],
         "title": "ToolsAction",
         "type": "string"
+      },
+      "ToolsCallParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "context_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Context Id",
+            "type": "string"
+          },
+          "revision": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Revision",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "default": 120000,
+            "maximum": 120000,
+            "minimum": 1,
+            "title": "Timeout Ms",
+            "type": "integer"
+          },
+          "target_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Digest"
+          }
+        },
+        "required": [
+          "session_id",
+          "name",
+          "arguments",
+          "request_id",
+          "context_id",
+          "revision"
+        ],
+        "title": "ToolsCallParams",
+        "type": "object"
+      },
+      "ToolsCallResult": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol": {
+            "const": "hermes-owned-tool-call-v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "attempt_id": {
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "running",
+              "blocked",
+              "rejected",
+              "not-dispatched",
+              "returned",
+              "returned-error"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "observation": {
+            "enum": [
+              "handler-return",
+              "policy-result",
+              "metadata-only",
+              "unknown"
+            ],
+            "title": "Observation",
+            "type": "string"
+          },
+          "output": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          }
+        },
+        "required": [
+          "protocol",
+          "attempt_id",
+          "state",
+          "terminal",
+          "duplicate",
+          "observation",
+          "output"
+        ],
+        "title": "ToolsCallResult",
+        "type": "object"
       },
       "ToolsChange": {
         "additionalProperties": false,
@@ -36039,6 +36517,7 @@
       },
       "ToolsShowResult": {
         "additionalProperties": false,
+        "description": "Profile-resolved discovery includes deferred tools; runtime_snapshot is\nthe separate, frozen model-visible array. Neither establishes admission.",
         "properties": {
           "sections": {
             "items": {
@@ -36050,13 +36529,94 @@
           "total": {
             "title": "Total",
             "type": "integer"
+          },
+          "discovery_definitions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Discovery Definitions",
+            "type": "array"
+          },
+          "runtime_snapshot": {
+            "$ref": "#/components/schemas/SessionToolSnapshot"
           }
         },
         "required": [
           "sections",
-          "total"
+          "total",
+          "discovery_definitions",
+          "runtime_snapshot"
         ],
         "title": "ToolsShowResult",
+        "type": "object"
+      },
+      "ToolsTargetPreviewParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "context_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Context Id",
+            "type": "string"
+          },
+          "revision": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "name",
+          "arguments",
+          "context_id",
+          "revision"
+        ],
+        "title": "ToolsTargetPreviewParams",
+        "type": "object"
+      },
+      "ToolsTargetPreviewResult": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol": {
+            "const": "hermes-owned-target-preview-v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "target_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolTargetBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "protocol",
+          "target_binding"
+        ],
+        "title": "ToolsTargetPreviewResult",
         "type": "object"
       },
       "ToolsetEntry": {
@@ -38812,7 +39372,7 @@
       },
       "_SessionScoped": {
         "additionalProperties": false,
-        "description": "Handlers that look a live session up with ``_sessions.get(params.get(\"session_id\"))``: an\nabsent / unknown id falls back to the launch profile's config, so it is never required.",
+        "description": "Optional session readback. Explicit ids require live transport membership;\nan omitted id reads launch-profile settings. Unknown ids are rejected.",
         "properties": {
           "session_id": {
             "anyOf": [

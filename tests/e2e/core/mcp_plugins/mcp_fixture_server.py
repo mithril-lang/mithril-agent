@@ -12,6 +12,9 @@ Environment knobs (all optional):
 * ``MCPE2E_CANARY`` — returned by every tool so a test can prove a REAL round trip.
 * ``MCPE2E_ECHO_ENV`` — name of an env var whose value ``env_echo`` returns (``${VAR}`` checks).
 * ``MCPE2E_RESOURCE_ONLY=1`` — advertise one resource and NO tools.
+* ``MCPE2E_EFFECT_FILE`` — persist each rw_probe nonce; nonce ``crash`` exits after fsync.
+* ``MCPE2E_404_CALLS`` — inject one budgeted HTTP session error for nonce ``expired``;
+  rw_probe executes/fsyncs before its result response is replaced, ro_probe is rejected before dispatch.
 * ``MCPE2E_TRANSPORT=http`` + ``MCPE2E_PORT_FILE`` — serve streamable HTTP on
   ``MCPE2E_PORT`` (0 = ephemeral) and write the bound port to the file.
 * ``MCPE2E_401_CALLS=<path>`` — HTTP only: while the file holds a positive integer N,
@@ -110,6 +113,14 @@ def build_server():
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True))
     def rw_probe(nonce: str = "") -> str:
         """Destructive probe (annotated destructiveHint=true)."""
+        effect_file = os.environ.get("MCPE2E_EFFECT_FILE")
+        if effect_file:
+            with open(effect_file, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"pid": os.getpid(), "nonce": nonce}) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            if nonce == "crash":
+                os._exit(7)  # Persist the test effect, then lose the response.
         return f"RW:{canary}:{nonce}"
 
     @server.tool()
@@ -145,7 +156,7 @@ def build_server():
     return server
 
 
-def _take_401(path: str) -> bool:
+def _take_fault(path: str) -> bool:
     try:
         with open(path, encoding="utf-8") as fh:
             left = int(fh.read().strip() or 0)
@@ -161,6 +172,7 @@ def _take_401(path: str) -> bool:
 def _recording_app(inner):
     """ASGI wrapper: log each POSTed JSON-RPC body; optionally answer tools/call with 401."""
     fault_file = os.environ.get("MCPE2E_401_CALLS")
+    expired_file = os.environ.get("MCPE2E_404_CALLS")
 
     async def app(scope, receive, send):
         if scope["type"] != "http" or scope.get("method") != "POST":
@@ -179,11 +191,20 @@ def _recording_app(inner):
             parsed = {"unparsed": body.decode("utf-8", "replace")}
         _log(parsed)
         is_call = isinstance(parsed, dict) and parsed.get("method") == "tools/call"
-        if is_call and fault_file and _take_401(fault_file):
+        if is_call and fault_file and _take_fault(fault_file):
             _log({"injected_401_for": parsed.get("id")})
             await send({"type": "http.response.start", "status": 401,
                         "headers": [(b"content-type", b"application/json")]})
             await send({"type": "http.response.body", "body": b'{"error":"unauthorized"}'})
+            return
+        params = parsed.get("params", {}) if isinstance(parsed, dict) else {}
+        expired = (is_call and expired_file and params.get("arguments", {}).get("nonce") == "expired"
+                   and _take_fault(expired_file))
+        write_expired = expired and params.get("name") == "rw_probe"
+        if expired and not write_expired:
+            _log({"injected_404_before_dispatch": parsed.get("id")})
+            await send({"type": "http.response.start", "status": 404, "headers": []})
+            await send({"type": "http.response.body", "body": b"Session not found"})
             return
         replayed = False
 
@@ -194,7 +215,24 @@ def _recording_app(inner):
                 return {"type": "http.request", "body": body, "more_body": False}
             return await receive()
 
-        await inner(scope, replay, send)
+        response_replaced = False
+
+        async def replace_write_reply(event):
+            nonlocal response_replaced
+            if event["type"] == "http.response.start":
+                return  # Hold the status until the actual tool result is produced.
+            if event["type"] == "http.response.body" and not response_replaced:
+                if b'"result"' not in event.get("body", b""):
+                    return
+                effect_file = os.environ["MCPE2E_EFFECT_FILE"]
+                with open(effect_file, encoding="utf-8") as fh:
+                    assert any(json.loads(line)["nonce"] == "expired" for line in fh)
+                response_replaced = True
+                _log({"injected_404_after_effect": parsed.get("id")})
+                await send({"type": "http.response.start", "status": 404, "headers": []})
+                await send({"type": "http.response.body", "body": b"Session not found"})
+
+        await inner(scope, replay, replace_write_reply if write_expired else send)
 
     return app
 

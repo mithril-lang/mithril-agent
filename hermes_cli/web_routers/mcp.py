@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
+from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create, _normalize_mcp_server_update
 from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
 from hermes_cli.web_routers._common import (
     _profile_cli_args, _profile_scope, _spawn_hermes_action, config_write_scope, http_failure,
@@ -155,6 +155,42 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         _log.exception("POST /api/mcp/servers failed")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _mcp_server_summary(name, server_config)
+
+
+
+@router.put("/api/mcp/servers/{name}")
+async def update_mcp_server(name: str, body: MCPServerCreate, profile: Optional[str] = None):
+    """Edit/rename exactly one profile-owned entry in a single serialized config write."""
+    def _run():
+        from hermes_cli.config import read_user_config_raw
+        from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+        with config_write_scope(body.profile or profile):
+            config = read_user_config_raw()
+            servers = config.get("mcp_servers") or {}
+            _entries, plugins = server_configs_with_sources(servers)
+            target = (body.name or "").strip()
+            if plugins.get(name) or plugins.get(target):
+                raise HTTPException(status_code=409, detail="Plugin-provided MCP servers cannot be modified")
+            if name not in servers:
+                raise HTTPException(status_code=404, detail="MCP server not found")
+            if name != target and target in servers:
+                raise HTTPException(status_code=409, detail="MCP server name already exists")
+            if not isinstance(servers[name], dict):
+                raise HTTPException(status_code=400, detail="Malformed server configuration")
+            try:
+                expanded = (load_config().get("mcp_servers") or {}).get(name, {})
+                target, replacement = _normalize_mcp_server_update(body, servers[name], expanded)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            updated = dict(servers)
+            del updated[name]
+            updated[target] = replacement
+            config["mcp_servers"] = updated
+            save_config(config)
+            return _mcp_server_summary(target, replacement)
+
+    return await asyncio.to_thread(_run)
 
 
 @router.put("/api/mcp/servers")

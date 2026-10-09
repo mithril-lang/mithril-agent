@@ -19,6 +19,8 @@ from . import (  # noqa: F401
     sessions,
     tools_commands,
     tools_mcp_plugins,
+    tool_attempts,
+    tool_call,
 )
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import EVENTS, METHODS, SERVER_REQUESTS

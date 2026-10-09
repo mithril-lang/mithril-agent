@@ -619,19 +619,22 @@ def _run_one_file_once(
 def _parse_pytest_summary(output: str) -> dict[str, int]:
     """Extract per-file test pass/fail/skip counts from pytest output.
 
-    pytest prints a summary line like ``12 passed, 3 skipped, 1 failed in 2.1s``
-    as the last non-empty line before the short test summary.  We scrape that
-    line for the individual counts so the progress display can show test-level
-    granularity instead of just file-level pass/fail.
+    pytest prints a terminal result like ``12 passed, 3 skipped in 2.1s``.
+    Teardown logging can follow it, so only accept the complete terminal
+    result shape, not arbitrary log lines mentioning counts.
 
     Returns a dict with keys ``passed``, ``failed``, ``skipped``, ``errors``,
     ``xfailed``, ``xpassed`` (only keys found in the output are present).
     """
     result: dict[str, int] = {}
-    # Walk backwards from the end — the summary line is always near the tail.
+    terminal_result = re.compile(
+        r"(?:\d+\s+(?:passed|failed|skipped|errors?|xfailed|xpassed|deselected|warnings?)"
+        r"(?:,\s*\d+\s+(?:passed|failed|skipped|errors?|xfailed|xpassed|deselected|warnings?))*"
+        r"|no tests ran) in \d+(?:\.\d+)?s(?: \([\d:]+\))?"
+    )
     for line in reversed(output.splitlines()):
-        line = line.strip()
-        if not line:
+        line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip().strip("=").strip()
+        if not terminal_result.fullmatch(line):
             continue
         # Match "N passed", "N failed", "N skipped", "N errors", "N xfailed", "N xpassed"
         for m in re.finditer(r"(\d+)\s+(passed|failed|skipped|errors|xfailed|xpassed)", line):
@@ -639,13 +642,9 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
         # Also match "N error" (singular — pytest uses this sometimes).
         for m in re.finditer(r"(\d+)\s+error\b", line):
             result.setdefault("errors", result.get("errors", 0) + int(m.group(1)))
-        if result:
-            # Found the counts line — done.
-            break
-        # Stop at the short test summary header (if any) — everything above
-        # that is individual failure details, not the counts line.
-        if line.startswith("FAILED") or line.startswith("SHORT TEST SUMMARY"):
-            break
+        # A legitimate deselected/no-tests result must not fall back to
+        # counts in earlier diagnostics. Preserve the run-level no-tests gate.
+        break
     return result
 
 

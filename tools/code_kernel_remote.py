@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class RemoteKernel:
     attached: int = 0
     # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
     pinned: bool = False
+    profile_home: str = field(default_factory=hermes_home_key)
 
     def sh(self, cmd: str, timeout: int = 15) -> str:
         return _sh(self.env, cmd, timeout)
@@ -154,7 +156,10 @@ class RemoteKernel:
 def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: frozenset) -> Tuple:
     """The hermes_tools stub module is generated from ``sandbox_tools`` once, at spawn, so a kernel
     is only reusable by calls with the SAME tool set; a different set gets its own kernel."""
-    return (owner, "remote", env_type, task_env_id, tuple(sorted(sandbox_tools)))
+    key = (owner, "remote", env_type, task_env_id, hermes_home_key(), tuple(sorted(sandbox_tools)))
+    from tools.terminal_tool import resolve_task_overrides
+    runtime_context = resolve_task_overrides(task_env_id).get("_owned_runtime_context")
+    return key + (runtime_context,) if runtime_context else key
 
 
 # Registry + lock shared-shape with code_kernel; teardown runs outside the lock.

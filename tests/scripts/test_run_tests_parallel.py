@@ -574,3 +574,58 @@ def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Pa
         off_host.add("posix")
     assert {n.split("platforms(")[1].split(")")[0].strip("'") for n in notes} == off_host, proc.stdout
     assert all("they run on the" in n for n in notes), proc.stdout
+
+
+@pytest.mark.parametrize("outcome", ["pass", "fail", "error", "skip", "no_match"])
+def test_filtered_summary_matches_real_xml_after_teardown_log(tmp_path, outcome):
+    """A daemon's atexit counts cannot replace actual selected pytest outcomes."""
+    import xml.etree.ElementTree as ET
+
+    root = _probe_root(tmp_path)
+    probe = tmp_path / "summary-probe"
+    probe.mkdir()
+    witness = tmp_path / "executed"
+    report = tmp_path / "actual.xml"
+    setup = ""
+    body = {
+        "pass": "assert True",
+        "fail": "assert False, 'selected failure'",
+        "error": "assert True",
+        "skip": "pytest.skip('selected skip')",
+        "no_match": "assert True",
+    }[outcome]
+    if outcome == "error":
+        setup = "@pytest.fixture(autouse=True)\ndef setup_failure():\n    pytest.fail('selected setup failure')\n"
+    (probe / "test_outcomes.py").write_text(
+        "import atexit, pytest\nfrom pathlib import Path\n"
+        "atexit.register(lambda: print('owned bridge shutdown: 0 errors'))\n"
+        + setup
+        + f"def test_selected():\n    Path({str(witness)!r}).touch()\n    {body}\n"
+        + "def test_other():\n    pytest.fail('must remain deselected')\n",
+        encoding="utf-8",
+    )
+    selected = "no_such_test" if outcome == "no_match" else "test_selected"
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts/run_tests_parallel.py"), "--paths", str(probe),
+         "-j", "1", "--file-timeout", "30", "--file-retries", "0", "--", "-s", "--color=no",
+         "-k", selected, "--junitxml", str(report)],
+        cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    actual = ET.parse(report).getroot().find("testsuite")
+    assert actual is not None
+    assert int(actual.get("tests")) == (0 if outcome == "no_match" else 1)
+    assert witness.exists() == (outcome in {"pass", "fail", "skip"})
+    assert int(actual.get("failures")) == (1 if outcome == "fail" else 0)
+    assert int(actual.get("errors")) == (1 if outcome == "error" else 0)
+    assert int(actual.get("skipped")) == (1 if outcome == "skip" else 0)
+    assert result.returncode == (0 if outcome in {"pass", "skip"} else 1), result.stdout
+    if outcome == "no_match":
+        assert "NO TESTS RAN" in result.stdout
+    else:
+        assert "NO TESTS RAN" not in result.stdout, result.stdout
+        assert f"{1 if outcome == 'pass' else 0} tests passed" in result.stdout, result.stdout
+        assert f"{1 if outcome == 'fail' else 0} failed" in result.stdout, result.stdout
+        if outcome == "error":
+            assert "(1e," in result.stdout, result.stdout
+        if outcome == "skip":
+            assert "1 skipped" in result.stdout, result.stdout

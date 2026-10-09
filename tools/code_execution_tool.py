@@ -249,7 +249,7 @@ def retry(fn, max_attempts=3, delay=2):
 
 _UDS_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs."""
-import json, os, socket, shlex, threading, time
+import json, os, select, socket, shlex, threading, time
 
 _sock = None
 # The RPC server handles a single client connection serially and has no
@@ -269,6 +269,13 @@ def _connect():
         AF_UNIX is unreliable — the parent falls back to loopback TCP)
     """
     global _sock
+    if _sock is not None:
+        # An idle kernel can retain a socket the host has already closed.
+        # Detect EOF before sending an operation; after sending, EOF is unknown.
+        readable, _, _ = select.select([_sock], [], [], 0)
+        if readable and not _sock.recv(1, socket.MSG_PEEK):
+            _sock.close()
+            _sock = None
     if _sock is None:
         endpoint = os.environ["HERMES_RPC_SOCKET"]
         if endpoint.startswith("tcp://"):
@@ -293,12 +300,15 @@ def _call(tool_name, args):
     }) + "\\n"
     # Session kernels outlive the RPC server's 300s idle window, so their
     # connection can be legitimately gone by the next cell. The server
-    # re-accepts (HERMES_RPC_PERSISTENT=1); retry once on a fresh socket.
+    # re-accepts (HERMES_RPC_PERSISTENT=1). Only connection failures before
+    # send starts may retry; a lost result after send must never replay effects.
     _attempts = 2 if os.environ.get("HERMES_RPC_PERSISTENT") == "1" else 1
     with _call_lock:
         for _attempt in range(_attempts):
+            sent = False
             try:
                 conn = _connect()
+                sent = True  # sendall can fail after a partial or complete send
                 conn.sendall(request.encode())
                 buf = b""
                 while True:
@@ -309,7 +319,7 @@ def _call(tool_name, args):
                     if buf.endswith(b"\\n"):
                         break
                 break
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError) as exc:
                 global _sock
                 try:
                     if _sock is not None:
@@ -317,6 +327,9 @@ def _call(tool_name, args):
                 except OSError:
                     pass
                 _sock = None
+                if sent:
+                    raise RuntimeError("Child tool outcome is unknown after socket send; "
+                                       "the request was not retried.") from exc
                 if _attempt + 1 >= _attempts:
                     raise
     raw = buf.decode().strip()
@@ -408,7 +421,7 @@ def _get_or_create_env(task_id: str):
     from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
     from tools.terminal_tool import (
         _active_environments, _env_lock, _get_env_config, _last_activity,
-        _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
+        _start_cleanup_thread, _creation_locks, _creation_locks_lock, resolve_task_overrides,
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
     )
     effective_task_id = _resolve_container_task_id(task_id)
@@ -429,7 +442,7 @@ def _get_or_create_env(task_id: str):
             return env, _get_env_config()["env_type"]
         config = _get_env_config()
         env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
+        overrides = resolve_task_overrides(task_id)
         container_config = None
         if _is_container_backend(env_type):
             # Shared shaper: execute_code's own key subset dropped docker_extra_args / docker_forward_env /

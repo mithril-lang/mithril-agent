@@ -17,6 +17,7 @@ import sqlite3
 import threading
 import time
 from contextlib import suppress
+from copy import copy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -185,7 +186,7 @@ class _WriteQueue:
     """SQLite-backed async write queue. Survives crashes — pending rows replay on startup."""
 
     def __init__(self, client: _Client, db_path: Path):
-        self._client, self._db_path, self._q = client, db_path, queue.Queue()
+        self._client, self._db_path, self._q = copy(client), db_path, queue.Queue()
         self._thread = spawn_context_thread(self._loop, name="retaindb-writer")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()  # one cached connection per thread, all tracked in _connections
@@ -316,6 +317,22 @@ class RetainDBMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "retaindb"
 
+    def identity_signature(self) -> dict[str, Any]:
+        # Read initialized routing only. The generic owned fence hashes this
+        # privately; credentials and mutable memory data never enter identity.
+        client = self._client
+        return {"retaindb": {
+            "client_instance": id(client) if client is not None else None,
+            "base_url": client.base_url if client is not None else None,
+            "project": client.project if client is not None else None,
+            "user_id": self._user_id, "session_id": self._session_id,
+            "agent_id": self._agent_id,
+        }}
+
+    def bind_owned_tool_target(self, tool_name: str, args: dict, target):
+        from .owned_route import bind_route
+        return bind_route(self, target)
+
     def is_available(self) -> bool:
         return bool(get_secret("RETAINDB_API_KEY"))
 
@@ -418,7 +435,8 @@ class RetainDBMemoryProvider(MemoryProvider):
         if not self._client:
             return tool_error("RetainDB not initialized")
         try:
-            return json.dumps(self._dispatch(tool_name, args))
+            from .owned_route import operation_provider
+            return json.dumps(operation_provider(self)._dispatch(tool_name, args))
         except Exception as exc:
             return tool_error(str(exc))
 

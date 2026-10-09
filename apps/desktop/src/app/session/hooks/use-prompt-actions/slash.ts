@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
+import { parseCommandDispatch, parseSlashCommand, shouldFallbackToDispatch } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
@@ -272,8 +272,6 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return
         }
 
-        let slashExecError: unknown = null
-
         const handleDispatch = async (
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
         ): Promise<void> => {
@@ -382,12 +380,28 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           await submitPromptText(message, { sessionId, storedSessionId, displayText })
         }
 
+        let result: unknown
+        let refusedOwnership = false
+
         try {
-          const result = await requestGateway<unknown>('slash.exec', {
+          result = await requestGateway<unknown>('slash.exec', {
             session_id: sessionId,
             command: command.replace(/^\/+/, '')
           })
+        } catch (error) {
+          // Losing a result does not establish non-execution. Re-route only
+          // when the backend explicitly refused ownership before execution.
+          if (!shouldFallbackToDispatch(error)) {
+            const message = error instanceof Error ? error.message : String(error)
+            renderSlashOutput(`error: /${name} failed: ${message}`)
 
+            return
+          }
+
+          refusedOwnership = true
+        }
+
+        if (!refusedOwnership) {
           const dispatch = parseCommandDispatch(result)
 
           if (dispatch) {
@@ -410,11 +424,6 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
 
           return
-        } catch (error) {
-          // Fall back to command.dispatch for skill/send/alias directives, but
-          // keep the worker error: a slash.exec worker timeout/crash is the real
-          // failure, not the "not a quick/plugin/skill command" routing noise.
-          slashExecError = error
         }
 
         try {
@@ -430,18 +439,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await handleDispatch(dispatch)
         } catch (err) {
-          // "not a quick/plugin/bundle/skill command" (older gateways: without
-          // "bundle/") just means the fallback had nothing to add — the slash.exec failure (worker timeout, crash) is
-          // the real error, so don't bury it under the routing noise.
           const dispatchMessage = err instanceof Error ? err.message : String(err)
-
-          if (slashExecError && /not a quick\/plugin\/(?:bundle\/)?skill command/i.test(dispatchMessage)) {
-            const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
-            renderSlashOutput(`error: /${name} failed: ${original}`)
-
-            return
-          }
-
           renderSlashOutput(`error: ${dispatchMessage}`)
         }
       }

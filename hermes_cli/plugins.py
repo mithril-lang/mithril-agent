@@ -458,6 +458,7 @@ class PluginContext:
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        *, effect_manifest: dict | None = None,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
@@ -468,35 +469,12 @@ class PluginContext:
         ``plugins.entries.<plugin_id>.allow_tool_override: true`` in config.yaml — mirrors the trust gate
         pattern used for ``ctx.llm`` provider/model overrides (#23194).
         """
-        if override and not self._tool_override_allowed(name):
-            raise PluginToolOverrideError(
-                f"Plugin {self.manifest.name!r} cannot override built-in tool {name!r}. Set "
-                f"plugins.entries.{self.plugin_id}.allow_tool_override: true "
-                f"in config.yaml to allow this plugin to replace built-in tools."
-            )
-        from tools.registry import registry
-        scope = self._manager.scope_key
-        previous = registry.snapshot_registration(name, scope=scope)
-        if previous is None and not override and registry.get_entry(name, scope=scope) is not None:
-            logger.warning("Plugin %s tried to shadow global tool %s without override=True",
-                           self.manifest.name, name)
-            return None
-        registry.register(
-            name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
-            requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope,
-        )
-        registered = registry.snapshot_registration(name, scope=scope)
-        handle = None
-        if registered is not None and registered is not previous and registered.handler is handler:
-            self._manager._plugin_tool_names.add(name)
-            handle = self._manager._track_scoped_registration(
-                self.manifest, "tool", name, registry, registered, previous,
-                finalize=lambda: self._manager._remove_tool_name_if_unowned(name),
-            )
-        logger.debug("Plugin %s registered tool: %s%s", self.manifest.name, name,
-                     " (override)" if override else "")
-        return handle
+        from hermes_cli.plugin_tool_registration import register_tool
+
+        return register_tool(self, name, toolset, schema, handler, check_fn=check_fn,
+                             requires_env=requires_env, is_async=is_async,
+                             description=description, emoji=emoji, override=override,
+                             effect_manifest=effect_manifest)
 
     # -- capability probing (#64228) -----------------------------------------
     def has_capability(self, capability: str) -> bool:

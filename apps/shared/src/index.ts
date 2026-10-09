@@ -134,6 +134,7 @@ export {
   parseSlashCommand,
   type PrefillCommandDispatchResponse,
   type SendCommandDispatchResponse,
+  shouldFallbackToDispatch,
   type SkillCommandDispatchResponse,
   SLASH_COMMAND_RE
 } from './slash'
