@@ -70,7 +70,8 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
-def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str) -> Dict[str, Any]:
+def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str,
+                memory_route: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
     A persistence error cannot acknowledge a staged proposal. It may have landed before
@@ -82,6 +83,8 @@ def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin
         "summary": (summary or "").strip(), "origin": origin or "foreground",
         "created_at": time.time(), "payload": payload,
     }
+    if memory_route is not None:
+        record["memory_route"] = dict(memory_route)
     try:
         atomic_json_write(_pending_path(subsystem, pid), record)
     except Exception as e:

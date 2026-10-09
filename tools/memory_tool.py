@@ -81,6 +81,18 @@ def _pin_matched_entries(store: "MemoryStore", payload: Dict[str, Any]) -> Optio
     return None if result.get("success") else json.dumps(result, ensure_ascii=False)
 
 
+def _pending_memory_route(store: "MemoryStore", target: str) -> Dict[str, str]:
+    """Private review custody for new proposals; no raw filesystem paths in pending records."""
+    import hashlib
+
+    try:
+        profile, path = str(get_hermes_home().resolve()), str(store._path_for(target).resolve())
+    except OSError:
+        raise OSError("Pending memory store identity could not be confirmed; nothing was staged.") from None
+    return {"target": target, "profileDigest": hashlib.sha256(profile.encode()).hexdigest(),
+            "storeDigest": hashlib.sha256(path.encode()).hexdigest()}
+
+
 def _gate_or_stage(store: "MemoryStore", summary: str, detail: str, payload: Dict[str, Any]) -> Optional[str]:
     """JSON tool-result string when the write must NOT proceed (blocked or staged
     for approval), None to proceed. Fails open if the gate module can't load."""
@@ -96,7 +108,8 @@ def _gate_or_stage(store: "MemoryStore", summary: str, detail: str, payload: Dic
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
     try:
-        record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+        record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin(),
+                                memory_route=_pending_memory_route(store, payload.get("target", "memory")))
     except OSError as error:
         return tool_error(str(error), success=False, pending_confirmation="unknown")
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
@@ -193,7 +206,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             wa.MEMORY, payload,
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
-            origin=wa.current_origin())
+            origin=wa.current_origin(), memory_route=_pending_memory_route(store, target))
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
             "message": ("Background review may not delete memory entries unattended. The proposed "
@@ -297,15 +310,21 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
     return {"success": False, "error": f"Built-in {label} writes are disabled in memory config.", "target": target}
 
 
-def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
+def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore", *,
+                         memory_route: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve). A
     replace/remove applies to exactly its pinned ``matched_entry`` or is refused; a record
     staged before pinning has no verifiable target, so it is refused rather than replayed by
-    old_text (which could hit a newer entry the approver never saw)."""
+    old_text (which could hit a newer entry the approver never saw). New gated records also
+    carry private profile/store route custody; legacy records without it keep their existing
+    entry-pinning behavior and are not route-attested."""
     action, target = payload.get("action"), payload.get("target", "memory")
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return target_error
+    if memory_route is not None and memory_route != _pending_memory_route(store, target):
+        return {"success": False, "error": "The reviewed memory store changed; nothing was applied. "
+                                           "Restore the reviewed route or reject and recreate the proposal."}
     if any(not op.get("matched_entry") for op in destructive_ops(payload)):
         return {"success": False, "error": "This destructive pending write predates entry pinning and cannot be "
                                            "verified; nothing was applied. Reject it and recreate the change."}

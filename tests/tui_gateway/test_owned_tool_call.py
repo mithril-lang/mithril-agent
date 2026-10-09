@@ -184,6 +184,7 @@ def owned_sessions(tmp_path, monkeypatch, request):
         "test_owned_memory_target_preserves_store_mirrors_and_replay",
         "test_owned_memory_reviewed_routes_cannot_be_substituted",
         "test_owned_pending_failure_never_applies_or_replays_memory",
+        "test_owned_staged_memory_keeps_reviewed_route_until_explicit_approval",
         "test_real_browser_api_owned_hermes_network",
     }
     if inline_state:
