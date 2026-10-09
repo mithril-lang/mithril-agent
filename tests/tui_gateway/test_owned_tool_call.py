@@ -352,6 +352,80 @@ def test_owned_deferred_resolution_cannot_redirect_execution(owned_sessions, mon
 
 
 @pytest.mark.platforms("posix")
+def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monkeypatch, request):
+    import sys
+    import tui_gateway.server as server
+    from tools import mcp_tool_discovery as discovery
+    from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.tool_search import bridge_tool_schemas
+    from tools.registry import registry
+
+    monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
+    monkeypatch.setattr(registry, "_generation", registry._generation)
+    fixture = Path(__file__).parents[1] / "e2e/core/mcp_plugins/mcp_fixture_server.py"
+    _ensure_mcp_loop()
+    histories, tools, logs, names, writes = {}, {}, {}, {}, {}
+    pids = set()
+    try:
+        for owner in ["a", "b"]:
+            session = owned_sessions[owner]
+            home = Path(session["profile_home"])
+            (home / ".env").write_text(f"OWNED_MCP_CANARY=owned-{owner}\n")
+            logs[owner] = home / "mcp-inbound.jsonl"
+            config = {"command": sys.executable, "args": [str(fixture)], "trust": "untrusted",
+                      "connect_timeout": 15, "timeout": 10,
+                      "env": {"MCPE2E_LOG": str(logs[owner]), "MCPE2E_CANARY": "${OWNED_MCP_CANARY}"}}
+            with server._session_profile_runtime_scope(session):
+                registered = _run_on_mcp_loop(
+                    lambda: discovery._discover_and_register_server("owned-probe", config), timeout=20)
+                names[owner] = next(name for name in registered if name.endswith("ro_probe"))
+                writes[owner] = next(name for name in registered if name.endswith("rw_probe"))
+                agent = session["agent"]
+                agent.enabled_toolsets = [registry.get_entry(names[owner]).toolset]
+                agent.tools = bridge_tool_schemas(len(registered), ", ".join(registered))
+                agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+                tools[owner] = copy.deepcopy(agent.tools)
+                histories[owner] = copy.deepcopy(agent._session_messages)
+        for index, owner in enumerate(["a", "b", "a"]):
+            args = {"calls": [{"name": names[owner], "arguments": {"nonce": str(index)}}]}
+            reply = _call(owned_sessions, owner, owner, "tool_call", args, f"mcp-{index}")
+            assert reply["result"]["state"] == "returned", json.dumps(reply)
+            assert f"RO:owned-{owner}:{index}" in json.dumps(reply["result"]["output"]), reply
+            other = "b" if owner == "a" else "a"
+            foreign = _call(owned_sessions, other, owner, "tool_call", args, f"mcp-foreign-{index}")
+            assert foreign["error"]["code"] == 4001, foreign
+            replay = _call(owned_sessions, owner, owner, "tool_call", args, f"mcp-{index}")
+            assert replay["result"]["duplicate"] and replay["result"]["output"] is None, replay
+        for owner in ["a", "b"]:
+            denied = _call(owned_sessions, owner, owner, "tool_call",
+                           {"calls": [{"name": writes[owner], "arguments": {"nonce": "denied"}}]},
+                           "mcp-write-denied")
+            assert denied["result"]["state"] == "returned-error", json.dumps(denied)
+            frames = [json.loads(line) for line in logs[owner].read_text().splitlines()]
+            pids.update(frame["pid"] for frame in frames)
+            messages = [frame["msg"] for frame in frames]
+            assert any(msg.get("method") == "initialize" for msg in messages)
+            assert any(msg.get("method") == "tools/list" for msg in messages)
+            calls = [msg["params"] for msg in messages if msg.get("method") == "tools/call"]
+            assert [{"name": call["name"], "arguments": call["arguments"]} for call in calls] == [{"name": "ro_probe", "arguments": {"nonce": nonce}}
+                             for nonce in (["0", "2"] if owner == "a" else ["1"])], calls
+            assert owned_sessions[owner]["agent"].tools == tools[owner]
+            assert owned_sessions[owner]["agent"]._session_messages == histories[owner]
+            evidence = request.config.getoption("--owned-qualification-output")
+            if evidence:
+                output = Path(evidence)
+                output.mkdir(parents=True, exist_ok=True)
+                (output / f"mcp-{owner}-inbound.jsonl").write_text(logs[owner].read_text())
+    finally:
+        for session in owned_sessions.values():
+            with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+                shutdown_mcp_servers(scope=session["profile_home"], names={"owned-probe"})
+    import psutil
+    assert len(pids) == 2 and all(not psutil.pid_exists(pid) for pid in pids), pids
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("tool", ["read_file", "write_file"])
 def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkeypatch, tool):
     from hermes_cli.plugins import PluginManager
