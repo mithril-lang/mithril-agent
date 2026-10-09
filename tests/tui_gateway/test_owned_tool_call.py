@@ -582,6 +582,142 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("kind", ["read-only", "write-capable"])
+def test_owned_real_mcp_http_session_expiry(owned_sessions, monkeypatch, request, kind):
+    import subprocess
+    import sys
+    import time
+    import tui_gateway.server as server
+    from tools import approval_prompt, mcp_tool_discovery as discovery
+    from tools.environments.local import served_profile_child_env
+    from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.tool_search import bridge_tool_schemas
+    from tools.registry import registry
+
+    monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
+    monkeypatch.setattr(registry, "_generation", registry._generation)
+    fixture = Path(__file__).parents[1] / "e2e/core/mcp_plugins/mcp_fixture_server.py"
+    _ensure_mcp_loop()
+    processes, logs, effects, names, histories, schemas = {}, {}, {}, {}, {}, {}
+    approvals = []
+
+    def approve(command, description, **kwargs):
+        approvals.append(command)
+        return "once"
+
+    monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", approve)
+    try:
+        for owner in ["a", "b"]:
+            session = owned_sessions[owner]
+            home = Path(session["profile_home"])
+            logs[owner], effects[owner] = home / "http-inbound.jsonl", home / "http-effects.jsonl"
+            port_file, fault = home / "http-port", home / "404-budget"
+            fault.write_text("1" if owner == "a" else "0")
+            with server._session_profile_runtime_scope(session):
+                env = served_profile_child_env(base={}, target_home=home)
+                env.update({"MCPE2E_TRANSPORT": "http", "MCPE2E_LOG": str(logs[owner]),
+                            "MCPE2E_PORT_FILE": str(port_file), "MCPE2E_404_CALLS": str(fault),
+                            "MCPE2E_EFFECT_FILE": str(effects[owner]), "MCPE2E_CANARY": f"owned-{owner}"})
+                with (home / "http-server.stderr").open("ab") as stderr:
+                    processes[owner] = subprocess.Popen([sys.executable, str(fixture)], env=env,
+                                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                                       stderr=stderr)
+                deadline = time.monotonic() + 15
+                while not port_file.exists() and processes[owner].poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert port_file.exists(), "fixture HTTP server did not become ready"
+                port, pid = port_file.read_text().split()
+                assert int(pid) == processes[owner].pid
+                config = {"url": f"http://127.0.0.1:{port}/mcp", "trust": "untrusted",
+                          "connect_timeout": 15, "timeout": 10}
+                registered = _run_on_mcp_loop(
+                    lambda: discovery._discover_and_register_server("owned-http", config), timeout=20)
+                names[owner] = {n: next(name for name in registered if name.endswith(n))
+                                for n in ["ro_probe", "rw_probe"]}
+                agent = session["agent"]
+                agent.enabled_toolsets = [registry.get_entry(names[owner]["ro_probe"]).toolset]
+                agent.tools = bridge_tool_schemas(len(registered), ", ".join(registered))
+                agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+                schemas[owner], histories[owner] = copy.deepcopy(agent.tools), copy.deepcopy(agent._session_messages)
+        for index, owner in enumerate(["a", "b", "a"]):
+            reply = _call(owned_sessions, owner, owner, "tool_call",
+                          {"calls": [{"name": names[owner]["ro_probe"], "arguments": {"nonce": str(index)}}]},
+                          f"http-warm-{index}")
+            assert reply["result"]["state"] == "returned", reply
+            assert f"RO:owned-{owner}:{index}" in json.dumps(reply["result"]["output"])
+        tool = "ro_probe" if kind == "read-only" else "rw_probe"
+        args = {"calls": [{"name": names["a"][tool], "arguments": {"nonce": "expired"}}]}
+        expired = _call(owned_sessions, "a", "a", "tool_call", args, "http-expired")
+        if kind == "read-only":
+            assert expired["result"]["state"] == "returned", expired
+            assert "RO:owned-a:expired" in json.dumps(expired["result"]["output"]), expired
+            assert not effects["a"].exists()
+        else:
+            assert expired["result"]["state"] == "returned-error", expired
+            assert '"outcome_uncertain": true' in json.dumps(expired["result"]["output"]), expired
+            assert [json.loads(line)["nonce"] for line in effects["a"].read_text().splitlines()] == ["expired"]
+        before = logs["a"].read_text()
+        foreign = _call(owned_sessions, "b", "a", "tool_call", args, "http-foreign")
+        assert foreign["error"]["code"] == 4001, foreign
+        assert logs["a"].read_text() == before
+        replay = _call(owned_sessions, "a", "a", "tool_call", args, "http-expired")
+        assert replay["result"]["duplicate"] and replay["result"]["output"] is None, replay
+        assert logs["a"].read_text() == before
+        fresh = _call(owned_sessions, "a", "a", "tool_call",
+                      {"calls": [{"name": names["a"]["ro_probe"], "arguments": {"nonce": "fresh"}}]},
+                      "http-fresh")
+        assert fresh["result"]["state"] == "returned", fresh
+        assert "RO:owned-a:fresh" in json.dumps(fresh["result"]["output"])
+        assert len(approvals) == (1 if kind == "write-capable" else 0)
+        evidence = request.config.getoption("--owned-qualification-output")
+        if evidence:
+            output = Path(evidence)
+            output.mkdir(parents=True, exist_ok=True)
+            keys = ("state", "terminal", "duplicate", "observation", "attempt_id")
+            receipts = {label: {key: reply["result"][key] for key in keys}
+                        for label, reply in [("expired", expired), ("replay", replay), ("fresh", fresh)]}
+            receipts["writeOutcomeUncertainObserved"] = kind == "write-capable"
+            receipts["foreignTransportRejected"] = True
+            (output / f"http-{kind}-receipts.json").write_text(json.dumps(receipts, indent=2))
+        for owner in ["a", "b"]:
+            messages = [json.loads(line)["msg"] for line in logs[owner].read_text().splitlines()]
+            assert sum(msg.get("method") == "initialize" for msg in messages) == (2 if owner == "a" else 1)
+            calls = [msg["params"] for msg in messages if msg.get("method") == "tools/call"]
+            expired_calls = [c for c in calls if c["arguments"].get("nonce") == "expired"]
+            assert len(expired_calls) == (0 if owner == "b" else 2 if kind == "read-only" else 1)
+            if owner == "a":
+                marker = "injected_404_before_dispatch" if kind == "read-only" else "injected_404_after_effect"
+                assert sum(marker in msg for msg in messages) == 1
+            assert owned_sessions[owner]["agent"].tools == schemas[owner]
+            assert owned_sessions[owner]["agent"]._session_messages == histories[owner]
+            assert not effects["b"].exists()
+            evidence = request.config.getoption("--owned-qualification-output")
+            if evidence:
+                output = Path(evidence)
+                output.mkdir(parents=True, exist_ok=True)
+                (output / f"http-{kind}-{owner}-inbound.jsonl").write_text(logs[owner].read_text())
+                stderr = Path(owned_sessions[owner]["profile_home"]) / "http-server.stderr"
+                (output / f"http-{kind}-{owner}-server.stderr").write_text(stderr.read_text())
+                if effects[owner].exists():
+                    (output / f"http-{kind}-{owner}-effects.jsonl").write_text(effects[owner].read_text())
+    finally:
+        for session in owned_sessions.values():
+            with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+                shutdown_mcp_servers(scope=session["profile_home"], names={"owned-http"})
+        for process in processes.values():
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+    import psutil
+    assert len(processes) == 2 and all(not psutil.pid_exists(p.pid) for p in processes.values())
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("tool", ["read_file", "write_file"])
 def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkeypatch, tool):
     from hermes_cli.plugins import PluginManager
