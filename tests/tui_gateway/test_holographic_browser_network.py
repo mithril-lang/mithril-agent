@@ -24,7 +24,8 @@ from tests.tui_gateway.test_owned_tool_call import _communicate_qualification
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("owned_sessions", [opened_provider], indirect=True)
 @pytest.mark.parametrize("surface", ["web", "desktop"])
-def test_holographic_network_consent_and_profile_custody(owned_sessions, monkeypatch, request, tmp_path, surface):
+@pytest.mark.parametrize("operation", ["add", "update", "remove", "list", "search", "probe", "related", "reason", "contradict", "helpful", "unhelpful"])
+def test_holographic_network_consent_and_profile_custody(owned_sessions, monkeypatch, request, tmp_path, surface, operation):
     from fastapi import FastAPI, Header, HTTPException
     import uvicorn
     from agent.memory_provider import spawn_context_thread
@@ -38,7 +39,7 @@ def test_holographic_network_consent_and_profile_custody(owned_sessions, monkeyp
         pytest.skip("requires explicit Fund checkout and browser/runtime executables")
     fund = Path(fund)
     config = {"browserExecutable": request.config.getoption("--owned-browser-executable"),
-              "providerTools": "holographic", "inlineTools": True,
+              "providerTools": "holographic", "providerOperation": operation, "inlineTools": True,
               "desktopMainModule": request.config.getoption("--owned-desktop-main-module"),
               "desktopChatSource": request.config.getoption("--owned-desktop-chat-source"),
               "desktopElectronMain": request.config.getoption("--owned-desktop-electron-main"),
@@ -92,7 +93,7 @@ def test_holographic_network_consent_and_profile_custody(owned_sessions, monkeyp
             result[label] = {
                 "database": stores[key]._key,
                 "facts": [dict(row) for row in stores[key]._conn.execute(
-                    "SELECT fact_id, content, category, tags, trust_score FROM facts ORDER BY fact_id")],
+                    "SELECT fact_id, content, category, tags, trust_score, retrieval_count, helpful_count FROM facts ORDER BY fact_id")],
                 "frozen": session["agent"].tools,
                 "history": session["agent"]._session_messages}
         return result
@@ -113,6 +114,10 @@ def test_holographic_network_consent_and_profile_custody(owned_sessions, monkeyp
         for cycle, owner in enumerate(("a", "b", "a")):
             selected[0] = owner
             foreign = "b" if owner == "a" else "a"
+            if operation != "add":
+                for language in ("js", "python"):
+                    for suffix in ("memory-provider", "memory-provider-deny"):
+                        stores[owner].add_fact(f"holographic-{owner}-{cycle}-{surface}-{language}-{suffix}")
             before = {key: [tuple(row) for row in store._conn.execute("SELECT * FROM facts ORDER BY fact_id")]
                       for key, store in stores.items()}
             home = Path(owned_sessions[owner]["profile_home"])
@@ -132,25 +137,45 @@ def test_holographic_network_consent_and_profile_custody(owned_sessions, monkeyp
             if output:
                 directory = Path(output)
                 directory.mkdir(parents=True, exist_ok=True)
-                evidence = directory / f"holographic-{surface}-{cycle}.log"
+                evidence = directory / f"holographic-{operation}-{surface}-{cycle}.log"
             stdout, stderr = _communicate_qualification(process, 180, evidence)
             assert process.returncode == 0, stdout + stderr
             label = "browser" if surface == "web" else "electron desktop browser"
             for language in ("js", "python"):
                 for suffix in ("memory-provider", "memory-provider-deny"):
                     assert f"local owned {label} qualified: {language}-{suffix}" in stdout
-            actual = [dict(row) for row in stores[owner]._conn.execute("SELECT content FROM facts ORDER BY fact_id")]
-            expected = [f"holographic-{prior_owner}-{prior_cycle}-{surface}-{language}-memory-provider"
-                        for prior_cycle, prior_owner in enumerate(("a", "b", "a")) if prior_cycle <= cycle and prior_owner == owner
-                        for language in ("js", "python")]
-            assert [row["content"] for row in actual] == expected
+            actual = [dict(row) for row in stores[owner]._conn.execute(
+                "SELECT content, trust_score, helpful_count FROM facts ORDER BY fact_id")]
+            if operation == "add":
+                expected = [f"holographic-{prior_owner}-{prior_cycle}-{surface}-{language}-memory-provider"
+                            for prior_cycle, prior_owner in enumerate(("a", "b", "a")) if prior_cycle <= cycle and prior_owner == owner
+                            for language in ("js", "python")]
+                assert [row["content"] for row in actual] == expected
+            else:
+                expected = []
+                for prior_cycle, prior_owner in enumerate(("a", "b", "a")):
+                    if prior_cycle > cycle or prior_owner != owner:
+                        continue
+                    for language in ("js", "python"):
+                        for suffix in ("memory-provider", "memory-provider-deny"):
+                            allowed = suffix == "memory-provider"
+                            if allowed and operation == "remove":
+                                continue
+                            content = f"holographic-{prior_owner}-{prior_cycle}-{surface}-{language}-{suffix}"
+                            if allowed and operation == "update":
+                                content += " updated"
+                            expected.append({"content": content,
+                                "trust_score": 0.55 if allowed and operation == "helpful" else
+                                               0.4 if allowed and operation == "unhelpful" else 0.5,
+                                "helpful_count": int(allowed and operation == "helpful")})
+                assert actual == expected
             assert [tuple(row) for row in stores[foreign]._conn.execute("SELECT * FROM facts ORDER BY fact_id")] == before[foreign]
             for key, session in owned_sessions.items():
                 assert (session["agent"].tools, session["agent"]._session_messages) == frozen[key]
         for owner, session in owned_sessions.items():
             attempts = session["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"]
-            assert [(row["tool_name"], row["state"]) for row in attempts] == [("fact_store", "returned")] * (4 if owner == "a" else 2)
-        print(json.dumps({"qualified": f"actual-holographic-{surface}", "visits": 3, "allow": 6, "deny": 6,
+            assert [(row["tool_name"], row["state"]) for row in attempts] == [("fact_feedback" if operation in {"helpful", "unhelpful"} else "fact_store", "returned")] * (4 if owner == "a" else 2)
+        print(json.dumps({"qualified": f"actual-holographic-{surface}", "operation": operation, "visits": 3, "allow": 6, "deny": 6,
                           "foreign_effects": 0, "frozen_history_changed": False}))
     finally:
         if process is not None and process.poll() is None:
