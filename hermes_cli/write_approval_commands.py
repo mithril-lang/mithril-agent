@@ -24,12 +24,33 @@ def _fmt_pending_list(subsystem: str) -> str:
         tag = " [auto]" if origin == "background_review" else ""
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
         if subsystem == wa.MEMORY:
-            lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
+            lines.extend(f"      {line}" for line in _memory_review_lines(r["payload"]))
     lines.append("")
     lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
+
+
+def _memory_review_lines(payload: dict) -> List[str]:
+    """Review the full staged operation, not the 120-character queue summary.
+
+    Keep each new entry JSON-quoted so newlines/control characters cannot look
+    like another proposal or command. Destructive operations retain their
+    existing full pinned-entry disclosure and legacy-target warning.
+    """
+    target = payload.get("target", "memory")
+    label = {"memory": "MEMORY.md", "user": "USER.md"}.get(target, "unknown target")
+    lines = [f"Target: {label}"]
+    operations = payload.get("operations", []) if payload.get("action") == "batch" else [payload]
+    for index, op in enumerate(operations, 1):
+        action = op.get("action", "unknown")
+        lines.append(f"Operation {index}: {action}")
+        if action in {"add", "replace"}:
+            content = op.get("content") or op.get("new_text") or ""
+            lines.append(f"Complete new entry: {json.dumps(content, ensure_ascii=False)}")
+        lines.extend(_matched_entries(op))
+    return lines
 
 
 def handle_pending_subcommand(

@@ -58,7 +58,7 @@ def test_persistent_slash_workers_keep_pending_memory_custody(tmp_path, monkeypa
         for visit, owner in enumerate(("a", "b", "a")):
             home = Path(sessions[owner]["profile_home"])
             other = "b" if owner == "a" else "a"
-            content = f"reviewed-{owner}-{visit}"
+            content = f"reviewed-{owner}-{visit}: " + "reviewed detail " * 12 + f"\n全文の末尾-{owner}-{visit}"
             args = {"action": action, "target": target, "content": content}
             next_entries = list(expected[owner])
             if action == "add":
@@ -71,7 +71,7 @@ def test_persistent_slash_workers_keep_pending_memory_custody(tmp_path, monkeypa
                 args.pop("content")
             else:
                 args = {"target": target, "operations": [
-                    {"action": "replace", "old_text": next_entries[0], "content": content},
+                    {"action": "replace", "old_text": next_entries[0], "content": None, "new_text": content},
                     {"action": "add", "content": f"batch-extra-{owner}-{visit}"},
                 ]}
                 next_entries[0] = content
@@ -84,6 +84,12 @@ def test_persistent_slash_workers_keep_pending_memory_custody(tmp_path, monkeypa
                 assert load_on_disk_store()._entries_for(target) == expected[owner]
             listing = workers[owner].run("/memory pending")
             assert pending_id in listing
+            assert filename in listing
+            if action != "remove":
+                assert content.splitlines()[-1] in listing
+                assert json.dumps(content, ensure_ascii=False) in listing
+            if action == "batch":
+                assert f"batch-extra-{owner}-{visit}" in listing
             if action in {"replace", "remove", "batch"}:
                 assert expected[owner][0] in listing
             assert pending_id not in workers[other].run("/memory pending")
