@@ -16,3 +16,15 @@ def local_file_target(args, task_id):
     if get_nt_namespace_error(path):
         return None
     return {"namespace": "selected-local-terminal", "path": str(_resolve_path_for_task(path, task_id))}
+
+
+def local_search_target(args, task_id):
+    """Bind the search root using the handler's documented default semantics.
+
+    This describes the root only; files and links below it are not frozen.
+    Remote terminal namespaces retain their existing unbound behavior.
+    """
+    path = args.get("path", ".")
+    if path is None or (isinstance(path, str) and not path.strip()):
+        path = "."
+    return local_file_target({"path": path}, task_id)

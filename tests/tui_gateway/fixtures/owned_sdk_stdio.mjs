@@ -54,6 +54,25 @@ try {
       const read = await invoke('read_file', { path: `${roots[owner]}/owned-${visit}.txt` }, `read-${visit}`)
       assert.equal(read.observation, 'handler-return')
       assert.ok(read.output.content.includes(`${owner}-owned`))
+      for (const target of ['content', 'files']) {
+        for (const outputMode of ['content', 'files_only', 'count']) {
+          const args = {
+            pattern: target === 'content' ? `${owner}-owned` : `owned-${visit}.txt`,
+            path: roots[owner], target, output_mode: outputMode,
+            file_glob: `owned-${visit}.txt`
+          }
+          const requestId = `search-${visit}-${target}-${outputMode}`
+          const search = await invoke('search_files', args, requestId)
+          assert.equal(search.state, 'returned')
+          const output = JSON.stringify(search.output)
+          assert.ok(output.includes(`owned-${visit}.txt`), output)
+          assert.ok(output.includes(roots[owner]), output)
+          assert.ok(!output.includes(roots[owner === 'a' ? 'b' : 'a']), output)
+          const replay = await invoke('search_files', args, requestId)
+          assert.equal(replay.observation, 'metadata-only')
+          assert.equal(replay.output, null)
+        }
+      }
       await assert.rejects(
         invoke('read_file', { path: `${roots.b}/owned.txt` }, `foreign-${visit}`, owner === 'a' ? 'b' : 'a'),
         e => e.outcome === 'not-dispatched'

@@ -152,6 +152,11 @@ def owned_sessions(tmp_path, monkeypatch, request):
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     sessions = {}
     names = ["read_file", "write_file", "todo_list", "execute_code"]
+    if getattr(request.node, "originalname", None) in {
+        "test_owned_search_root_target_and_replay", "test_owned_search_defaults_stay_in_selected_profile",
+        "test_compiled_owned_sdk_real_stdio_roundtrip",
+    }:
+        names.append("search_files")
     inline_state = getattr(request.node, "originalname", None) in {
         "test_owned_memory_preserves_profile_prompt_and_replay",
         "test_owned_session_search_uses_attached_durable_store",
@@ -791,6 +796,94 @@ def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkey
         conflict = _call(owned_sessions, owner, owner, tool, args, f"fresh-preview-{visit}",
                          target_digest=binding["digest"])
         assert conflict["error"]["code"] == 4092
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("target", ["content", "files"])
+@pytest.mark.parametrize("output_mode", ["content", "files_only", "count"])
+def test_owned_search_root_target_and_replay(owned_sessions, monkeypatch, target, output_mode):
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    for visit, owner in enumerate(["a", "b", "a"]):
+        home = Path(owned_sessions[owner]["profile_home"])
+        old, fresh, alias = home / f"old-{visit}", home / f"fresh-{visit}", home / f"search-{visit}"
+        old.mkdir()
+        fresh.mkdir()
+        marker = f"search-canary-{owner}-{visit}"
+        (old / "old.txt").write_text(marker)
+        (fresh / "fresh.txt").write_text(marker)
+        alias.symlink_to(old, target_is_directory=True)
+        args = {"pattern": marker if target == "content" else "*.txt", "target": target,
+                "path": str(alias), "output_mode": output_mode}
+        first = _target_preview(owned_sessions, owner, owner, "search_files", args)["result"]["target_binding"]
+        assert first is not None and first["target"]["path"] == str(old.resolve()), first
+        alias.unlink()
+        alias.symlink_to(fresh, target_is_directory=True)
+        binding = _target_preview(owned_sessions, owner, owner, "search_files", args)["result"]["target_binding"]
+        assert binding["target"]["path"] == str(fresh.resolve()) and binding["digest"] != first["digest"]
+        stale = _call(owned_sessions, owner, owner, "search_files", args, f"search-stale-{visit}",
+                      target_digest=first["digest"])
+        assert stale["error"]["code"] == 4092, stale
+        changed = _call(owned_sessions, owner, owner, "search_files", {**args, "limit": 2},
+                        f"search-changed-{visit}", target_digest=binding["digest"])
+        assert changed["error"]["code"] == 4092, changed
+
+        def redirect(*, args, next_call, **kwargs):
+            alias.unlink()
+            alias.symlink_to(old, target_is_directory=True)
+            return next_call(args)
+
+        manager._middleware["tool_execution"] = [redirect]
+        rejected = _call(owned_sessions, owner, owner, "search_files", args, f"search-mid-{visit}",
+                         target_digest=binding["digest"])["result"]
+        assert rejected["state"] == "rejected" and rejected["output"] is None, rejected
+        row = owned_sessions[owner]["agent"]._session_db.get_tool_attempt("same-durable-owner", rejected["attempt_id"])
+        assert row["dispatched_at"] is None
+        manager._middleware.clear()
+        alias.unlink()
+        alias.symlink_to(fresh, target_is_directory=True)
+        result = _call(owned_sessions, owner, owner, "search_files", args, f"search-fresh-{visit}",
+                       target_digest=binding["digest"])["result"]
+        assert result["state"] == "returned", result
+        serialized = json.dumps(result["output"])
+        assert "fresh.txt" in serialized and "old.txt" not in serialized, result
+        replay = _call(owned_sessions, owner, owner, "search_files", args, f"search-fresh-{visit}",
+                       target_digest=binding["digest"])["result"]
+        assert replay["duplicate"] and replay["output"] is None
+        assert (old / "old.txt").read_text() == (fresh / "fresh.txt").read_text() == marker
+
+
+@pytest.mark.parametrize("path_args", [{}, {"path": None}, {"path": ""}, {"path": "  "}, {"path": "."}])
+@pytest.mark.parametrize("output_mode", ["content", "files_only", "count"])
+def test_owned_search_defaults_stay_in_selected_profile(owned_sessions, path_args, output_mode):
+    frozen = {owner: (copy.deepcopy(session["agent"].tools), copy.deepcopy(session["history"]))
+              for owner, session in owned_sessions.items()}
+    marker = f"selected-search-canary-{Path(owned_sessions['a']['profile_home']).parent.name}"
+    for owner, session in owned_sessions.items():
+        (Path(session["profile_home"]) / f"selected-{owner}.txt").write_text(marker)
+    for visit, owner in enumerate(["a", "b", "a"]):
+        args = {"pattern": marker, "output_mode": output_mode, **path_args}
+        foreign = "b" if owner == "a" else "a"
+        denied = _target_preview(owned_sessions, foreign, owner, "search_files", args)
+        assert denied["error"]["code"] == 4001
+        binding = _target_preview(owned_sessions, owner, owner, "search_files", args)["result"]["target_binding"]
+        assert binding["target"]["path"] == str(Path(owned_sessions[owner]["profile_home"]).resolve())
+        denied = _call(owned_sessions, foreign, owner, "search_files", args, f"default-foreign-{visit}",
+                       target_digest=binding["digest"])
+        assert denied["error"]["code"] == 4001
+        result = _call(owned_sessions, owner, owner, "search_files", args, f"default-{visit}",
+                       target_digest=binding["digest"])["result"]
+        assert result["state"] == "returned", result
+        serialized = json.dumps(result["output"])
+        assert f"selected-{owner}.txt" in serialized and f"selected-{foreign}.txt" not in serialized, result
+        replay = _call(owned_sessions, owner, owner, "search_files", args, f"default-{visit}",
+                       target_digest=binding["digest"])["result"]
+        assert replay["duplicate"] and replay["output"] is None
+    for owner, session in owned_sessions.items():
+        assert (session["agent"].tools, session["history"]) == frozen[owner]
 
 
 def test_owned_target_preview_respects_owner_and_unknown_tools(owned_sessions):
