@@ -11,6 +11,8 @@ import pytest
 
 
 def _qualification_groups(config):
+    if config.get("memoryReview"):
+        return [("test/memory-review-network.test.ts", "", "memory-review-network")]
     if config.get("inlineTools"):
         families = (["memory-staged", "memory-user-staged"] if config.get("stagedTools") else
                     ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"])
@@ -1958,7 +1960,7 @@ def test_mounted_web_desktop_cards_real_approval_queue(owned_sessions, monkeypat
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("family", ["file", "inline", "staged"])
+@pytest.mark.parametrize("family", ["file", "inline", "staged", "review"])
 def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, request, tmp_path, family):
     """Real WASM parents, consent UI, Hono/D1, ticket WS and actual owned handlers.
 
@@ -1980,7 +1982,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
     import tui_gateway.server as server
     from agent.memory_provider import spawn_context_thread
 
-    if family == "staged":
+    if family in {"staged", "review"}:
         from hermes_cli.config import load_config, save_config
         for session in owned_sessions.values():
             with server._session_profile_runtime_scope(session, hydrate_secrets=False):
@@ -1988,10 +1990,26 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 config.setdefault("memory", {})["write_approval"] = True
                 save_config(config)
 
+    review_proposals = []
+    if family == "review":
+        from tools.memory_tool import load_on_disk_store
+        from tools.registry import registry
+        for target in ("memory", "user"):
+            for decision in ("approve", "reject"):
+                content = f"network-{target}-{decision}: " + "full reviewed text " * 12 + "\n全文の末尾"
+                with server._session_profile_runtime_scope(owned_sessions["a"], hydrate_secrets=False):
+                    result = json.loads(registry.dispatch("memory", {"action": "add", "target": target,
+                                                                       "content": content}, store=load_on_disk_store()))
+                    assert result["success"] and result["staged"], result
+                review_proposals.append({"id": result["pending_id"], "target": target,
+                                         "decision": decision, "content": content})
+
     # Freeze the durable history after its real initial flush, including DB
     # metadata. Background persistence may stamp an unflushed seed while the
     # longer browser qualification runs; it must not change the conversation.
     original_histories = {}
+    review_frozen = {owner: {key: session["agent"]._memory_store.format_for_system_prompt(key)
+                            for key in ("memory", "user")} for owner, session in owned_sessions.items()} if family == "review" else {}
     for owner, session in owned_sessions.items():
         db = session["agent"]._session_db
         db.create_session(session_id="same-inline-archive", source="cli", model="fixture")
@@ -2049,7 +2067,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                             for key in ["same-inline-archive", "excluded-inline-archive"]},
                 "frozen": {key: agent._memory_store.format_for_system_prompt(key) for key in ["memory", "user"]},
             }
-            if family == "staged":
+            if family in {"staged", "review"}:
                 from tools import write_approval as wa
                 with server._session_profile_runtime_scope(session, hydrate_secrets=False):
                     states[owner]["pending"] = wa.list_pending(wa.MEMORY)
@@ -2073,6 +2091,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                   "input": str(home / "ws-owned.txt"), "output": str(home / "ws-browser-output"),
                   "browserExecutable": request.config.getoption("--owned-browser-executable"),
                   "inlineTools": family in {"inline", "staged"}, "stagedTools": family == "staged",
+                  "memoryReview": family == "review", "reviewProposals": review_proposals,
                   "desktopMainModule": request.config.getoption("--owned-desktop-main-module"),
                   "desktopChatSource": request.config.getoption("--owned-desktop-chat-source"),
                   "desktopElectronMain": request.config.getoption("--owned-desktop-electron-main"),
@@ -2108,7 +2127,23 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 assert process.returncode == 0, stdout + "\n" + stderr
                 outputs.append(stdout)
             stdout = "\n".join(outputs)
-            if family in {"inline", "staged"}:
+            if family == "review":
+                from tools import write_approval as wa
+                from tools.memory_tool import load_on_disk_store
+                assert "local Web memory review qualified: 4 decisions" in stdout, stdout
+                for owner, session in owned_sessions.items():
+                    with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+                        assert wa.list_pending(wa.MEMORY) == []
+                        store = load_on_disk_store()
+                        for target in ("memory", "user"):
+                            expected = [row["content"] for row in review_proposals
+                                        if row["target"] == target and row["decision"] == "approve"] if owner == "a" else []
+                            assert store._entries_for(target) == expected
+                    assert {key: session["agent"]._memory_store.format_for_system_prompt(key)
+                            for key in ("memory", "user")} == review_frozen[owner]
+                print(json.dumps({"qualified": "local-web-relay-slash-worker-memory-review", "decisions": 4,
+                                  "foreign_profile_effects": 0, "model_inference": False}))
+            elif family in {"inline", "staged"}:
                 kinds = (["memory-staged", "memory-user-staged"] if family == "staged" else
                          ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"])
                 for surface in ["browser", *(["desktop browser"] if config["desktopChatSource"] else [])]:
