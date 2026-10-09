@@ -234,6 +234,71 @@ def _target_preview(sessions, caller, target, name, args, **changes):
     return reply if reply is not None else sessions[caller]["wire"].replies.get(timeout=30)
 
 
+def test_owned_deferred_registration_retires_approval(owned_sessions, monkeypatch):
+    from tools.registry import registry
+    from tools.tool_search import bridge_tool_schemas
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
+    monkeypatch.setattr(registry, "_generation", registry._generation)
+    session = owned_sessions["a"]
+    agent = session["agent"]
+    home = Path(session["profile_home"])
+    name = "owned_deferred_write"
+    schema = copy.deepcopy(registry.get_entry("write_file").schema)
+    schema["name"] = name
+    handler = registry.get_entry("write_file").handler
+    probes = []
+
+    def available():
+        probes.append(True)
+        return True
+
+    def register():
+        registry.register(name=name, toolset="qualification-deferred", schema=schema,
+                          handler=handler, check_fn=available, scope=str(home), override=True)
+
+    register()
+    agent.enabled_toolsets = ["qualification-deferred"]
+    agent.tools = bridge_tool_schemas(1, name)
+    agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+    prompt, history = copy.deepcopy(agent.tools), copy.deepcopy(agent._session_messages)
+    args = lambda path: {"calls": [{"name": name, "arguments": {"path": str(path), "content": "owned"}}]}
+    warm = home / "deferred-warm"
+    result = _call(owned_sessions, "a", "a", "tool_call", args(warm), "deferred-warm")
+    assert warm.exists(), result
+    assert warm.read_text() == "owned", result
+    assert result["result"]["state"] == "returned", result
+    probe_count = len(probes)
+    captured = session_tool_snapshot(session)
+    assert len(probes) == probe_count, "owned readback must not probe deferred availability"
+    foreign = session_tool_snapshot(owned_sessions["b"])
+    original = registry.snapshot_registration(name, scope=str(home))
+    register()  # Same schema/handler, but a replacement registration owner.
+    target = home / "deferred-stale"
+    result = _call(owned_sessions, "a", "a", "tool_call", args(target), "deferred-stale",
+                   context_id=captured["context_id"], revision=captured["revision"])
+    assert not target.exists(), result
+    assert result["error"]["code"] == 4092, result
+    assert agent._session_db.get_tool_attempt(agent.session_id, "rpc:deferred-stale") is None
+    with registry._lock:
+        registry._slot(str(home))[name] = original
+    restored = session_tool_snapshot(session)
+    assert restored["context_id"] != captured["context_id"]
+    assert restored["revision"] == captured["revision"]
+    stale = _call(owned_sessions, "a", "a", "tool_call", args(target), "deferred-restored-stale",
+                  context_id=captured["context_id"], revision=captured["revision"])
+    assert stale["error"]["code"] == 4092 and not target.exists(), stale
+    fresh = _call(owned_sessions, "a", "a", "tool_call", args(target), "deferred-fresh")
+    assert target.read_text() == "owned" and fresh["result"]["state"] == "returned", fresh
+    replay = _call(owned_sessions, "a", "a", "tool_call", args(target), "deferred-fresh")
+    assert replay["result"]["duplicate"] and replay["result"]["output"] is None
+    assert session_tool_snapshot(owned_sessions["b"]) == foreign
+    assert agent.tools == prompt and agent._session_messages == history
+    assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts(agent.session_id)["attempts"] == []
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("tool", ["read_file", "write_file"])
 def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkeypatch, tool):

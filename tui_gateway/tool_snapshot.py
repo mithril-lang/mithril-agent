@@ -8,6 +8,24 @@ import json
 import uuid
 
 
+def _deferred_execution_names(agent, definitions):
+    """Fence selectable deferred registrations without availability probes or publication."""
+    if not any(d["function"]["name"] == "tool_call" for d in definitions):
+        return ()
+    from model_tools import _select_tool_names
+    from tools.tool_search import is_deferrable_tool_name, load_config_readonly
+
+    selected = _select_tool_names(getattr(agent, "enabled_toolsets", None),
+                                  getattr(agent, "disabled_toolsets", None), True)
+    defer = load_config_readonly().effective_defer_tools
+    published = {d["function"]["name"] for d in definitions}
+    names = tuple(sorted(name for name in selected - published
+                         if is_deferrable_tool_name(name, defer)))
+    if len(names) + len(definitions) > 4096:
+        raise ValueError("owned deferred execution scope exceeds context limit")
+    return names
+
+
 def _terminal_policy_identity(session: dict) -> str:
     """Re-resolve the owner's policy even inside a scope captured before an approval wait.
 
@@ -90,11 +108,17 @@ def session_tool_snapshot(session: dict | None) -> dict:
     try:
         with _session_profile_runtime_scope(session, hydrate_secrets=False):
             manifests, bindings = runtime_effect_snapshot(definitions)
+            from tools.dispatch_binding import capture_dispatch_binding
+            from tools.registry import registry
+
+            with registry._lock:
+                deferred_names = _deferred_execution_names(agent, definitions)
+                bindings += tuple(capture_dispatch_binding(registry, name) for name in deferred_names)
             # Registry metadata alone does not identify agent-owned stores,
             # callbacks, context engines or external memory-provider routes.
             # Keep captures private so target replacement retires old consent.
-            inline_bindings = tuple(InlineDispatchBinding(agent, d["function"]["name"])
-                                    for d in definitions)
+            inline_bindings = tuple(InlineDispatchBinding(agent, name) for name in
+                                    [d["function"]["name"] for d in definitions] + list(deferred_names))
         manifest_encoded = json.dumps(manifests, ensure_ascii=False, sort_keys=True,
                                       separators=(",", ":"), allow_nan=False).encode("utf-8")
         manifest_identity = hashlib.sha256(manifest_encoded).hexdigest()
