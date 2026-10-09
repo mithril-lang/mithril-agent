@@ -87,10 +87,17 @@ def _usage(subsystem: str) -> str:
     return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
 
 
-def _review_digest(subsystem: str, record: dict) -> str:
+def _memory_review_state(record: dict):
+    from tools.memory_tool import load_on_disk_store
+    return load_on_disk_store().review_state(record.get("payload", {}).get("target", "memory"))
+
+
+def _review_digest(subsystem: str, record: dict, store_state=None) -> str:
     """Bind reviewed record bytes to the selected profile; never disclose its path."""
     from hermes_constants import get_hermes_home
     data = {"profile": str(get_hermes_home().resolve()), "subsystem": subsystem, "record": record}
+    if subsystem == wa.MEMORY:
+        data["storeState"] = _memory_review_state(record) if store_state is None else store_state
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False,
                                      allow_nan=False, separators=(",", ":")).encode()).hexdigest()
 
@@ -119,24 +126,25 @@ def _review_memory(rest: List[str]) -> str:
         return "Pending memory review could not be confirmed; nothing was applied."
 
 
-def _review_error(subsystem: str, rest: List[str], record: dict) -> Optional[str]:
+def _review_error(subsystem: str, rest: List[str], record: dict, store_state=None) -> Optional[str]:
     """Optional digest leaves existing one-argument CLI approval compatible.
 
     A remote human-review client must require the reviewed digest, never infer
     consent from it. Decision callers hold the queue lock across this comparison,
     claim, application and retirement. Store-route/entry checks still apply;
-    arbitrary filesystem writers and monotonic store data revisions are separate.
+    the checked store revision is also compared under its mutation lock. External
+    filesystem rollback and external-provider transactions remain separate.
     """
     if subsystem != wa.MEMORY or len(rest) == 1:
         return None
     if len(rest) != 2 or not re.fullmatch(r"[a-f0-9]{64}", rest[1]):
         return "Invalid memory review digest; review the proposal again."
     try:
-        if hmac.compare_digest(rest[1], _review_digest(subsystem, record)):
+        if hmac.compare_digest(rest[1], _review_digest(subsystem, record, store_state)):
             return None
     except Exception:
         return "Pending memory review could not be confirmed; nothing was applied."
-    return "Pending memory proposal changed since review; review it again. Nothing was applied."
+    return "Pending memory proposal or store changed since review; review it again. Nothing was applied."
 
 
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:
@@ -231,7 +239,8 @@ def _decide_one(subsystem: str, pending_id: str, rest: List[str], decision: str,
                 return False, f"No pending {subsystem} write with id '{pending_id}'.", {}
             if rec.get("id") != pending_id or rec.get("subsystem") != subsystem:
                 return False, "Pending proposal identity changed; nothing was applied.", {}
-            if error := _review_error(subsystem, rest, rec):
+            saved_state = _memory_review_state(rec) if subsystem == wa.MEMORY and len(rest) != 1 else None
+            if error := _review_error(subsystem, rest, rec, saved_state):
                 return False, error, {}
             if decision == "approve" and subsystem == wa.MEMORY and memory_store is None:
                 return False, "memory store unavailable", {}
@@ -239,7 +248,9 @@ def _decide_one(subsystem: str, pending_id: str, rest: List[str], decision: str,
             if decision == "reject":
                 finish_decision(subsystem, rec, decision)
                 return True, "", {}
-            ok, message, result = _apply_one(subsystem, rec, memory_store)
+            from tools.memory_tool_revision import reviewed_state
+            with reviewed_state(saved_state):
+                ok, message, result = _apply_one(subsystem, rec, memory_store)
             if not ok:
                 if subsystem == wa.MEMORY and result:
                     # Built-in memory validation failures explicitly report no write.
