@@ -629,7 +629,10 @@ def _run_write_gate(build_staging):
     if decision.blocked:
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)
-    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    try:
+        record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    except OSError as error:
+        return tool_error(str(error), success=False, pending_confirmation="unknown")
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
 

@@ -201,3 +201,11 @@ Private inline capture also binds current store paths and enabled flags. Changes
 Shared SDK agency.20 strictly decodes this target, compares every identity and ordered mirror, and presents MEMORY.md/USER.md, session and write notification provider names without opaque digests. Desktop preview.50 vendors the matched429-file archive. Local SDK33, Desktop123, agent94 and focused owned10 tests pass; counts overlap and are not all-tool coverage.
 
 The first actual network run completed Electron todo and MEMORY.md in both JS/Python, then failed opening the next child log with ENOSPC. Preserve that failure and treat the whole inline family as unqualified until a complete new run succeeds. Web, USER.md, deny, recall, current file family and publication/installed gates are not inferred from those four modes. Target identity does not approve future staged execution, bind mutable data CAS, attest undeclared provider state or make multiple providers atomic.
+
+## Unconfirmed pending-write persistence
+
+The shared memory/skills pending store now refuses to acknowledge a proposal when atomic persistence raises. A record may have landed before confirmation was lost, so the error identifies its pending ID and directs inspection of the selected profile's queue before recreating it. No gated direct write proceeds.
+
+The foreground memory and skills gate adapters return a bounded structured error with pending_confirmation=unknown. This lets owned memory finish its durable attempt instead of leaving a running attempt behind a propagated exception. Metadata-only replay never stages again, and failed/staged results never notify mirrors.
+
+Two invariant functions with eight cases inject failure before or after a real pending-record write. Actual registry memory/skills dispatch and selected-agent owned memory RPC qualify same-ID profiles A -> B -> A, both memory stores, queue custody, frozen schema/history and no direct/mirror effects or replay. The old helper falsely reports staged success in all eight cases. An intermediate exception-only fix left four owned attempts running; that failure is retained. Related189 and skills batch10 pass. This does not qualify future staged approval identity, recovery UI, mutable CAS, atomicity, current whole network, public or installed behavior.
