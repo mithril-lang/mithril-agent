@@ -497,6 +497,30 @@ or prevent a filesystem race after the final recheck. Full operation declaration
 preview-to-executor target identity, namespace-specific resolution and atomic file
 effects remain separate qualification gates.
 
+### Owned target preview contract
+
+`tools.target_preview` reads the explicitly attached, idle, already built agent's
+frozen tool context. It uses the same selected-task overrides as `tools.call` and
+does not invoke a handler, create a runtime or grant permission. A registered
+resolver returns a bounded partial target plus a content digest covering owner,
+task, context, revision, name, exact finite JSON arguments and resolved target.
+Unsupported resolvers/namespaces return `target_binding: null`; tools outside the
+frozen conversation and foreign transport owners are refused.
+
+`tools.call(target_digest=...)` checks that identity before admission and throughout
+its existing authority checks, including after middleware. The durable request
+digest also includes the target digest, so a request ID cannot be reused for a
+different preview identity. Identical duplicates remain metadata-only. Omitting
+the additive field preserves existing callers and their request digest.
+
+The digest is target identity, not a signed grant or complete effect declaration.
+Only local `write_file` currently supplies a resolver. This endpoint is locally
+qualified through the real owned RPC/agent/file handler; shared SDK, API relay,
+human approval display and preview-to-executor grant integration still need to
+consume it. Namespace-specific targets, inode/atomic file effects, distributed
+budgets and public/installed qualification remain required. The shared selected-task
+override preparation now lives in `tui_gateway/owned_tool_targets.py`.
+
 ### Cross-language owned SDK qualification
 
 The opt-in `tests/tui_gateway/test_owned_tool_call.py` cross-repository qualifier

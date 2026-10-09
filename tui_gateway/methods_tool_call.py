@@ -22,6 +22,7 @@ def _tool_only_run(rid, params, session, agent, db):
     from agent.subagent_lifecycle import bind_subagent_parent
     from agent.turn_facade_lease import DurableTurnLease, LEASE_TTL_SECONDS
     from tui_gateway.tool_snapshot import session_tool_snapshot
+    from tui_gateway.owned_tool_targets import prepare_owned_tool_task, owned_target_binding
 
     sid, name = params["session_id"], params["name"]
     home, owner = session.get("profile_home"), agent.session_id
@@ -32,7 +33,10 @@ def _tool_only_run(rid, params, session, agent, db):
     parent = _ToolCallRef(name, {}, task, f"tool-only-call:{params['request_id']}", [])
     try:
         args = json.loads(json.dumps(params["arguments"], ensure_ascii=False, allow_nan=False))
-        digest, size = _digest({"name": name, "args": args, "task": task, "parent": parent.call_id})
+        intent = {"name": name, "args": args, "task": task, "parent": parent.call_id}
+        if params.get("target_digest") is not None:
+            intent["target_digest"] = params["target_digest"]
+        digest, size = _digest(intent)
     except (TypeError, ValueError, OverflowError):
         return _err(rid, 4000, "tool arguments must be bounded finite JSON")
     if size > 2 * 1024 * 1024:
@@ -52,6 +56,7 @@ def _tool_only_run(rid, params, session, agent, db):
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     agent._current_turn_id = parent.call_id
     agent._current_api_request_id = ""
+    target_ready = False
 
     def authority():
         if (time.monotonic() >= deadline or _current_session_steer_authority(sid)[1] is not session
@@ -59,6 +64,13 @@ def _tool_only_run(rid, params, session, agent, db):
                 or agent.session_id != owner or agent._session_db is not db):
             return False
         snapshot = session_tool_snapshot(session)
+        if target_ready:
+            try:
+                binding = owned_target_binding(session, snapshot, name, args, task)
+                if binding is None or binding["digest"] != params["target_digest"]:
+                    return False
+            except (TypeError, ValueError, OSError, RuntimeError):
+                return False
         return ((snapshot["context_id"], snapshot["revision"]) == identity
                 and db.refresh_session_turn_lease(owner, holder, ttl_seconds=LEASE_TTL_SECONDS))
 
@@ -68,19 +80,14 @@ def _tool_only_run(rid, params, session, agent, db):
             return _err(rid, 4092, "session schema context or authority changed")
         # The private tool-only task must use this conversation's selected
         # workspace and backend overrides, not a gateway process fallback cwd.
-        from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides
-        overrides = dict(resolve_task_overrides(owner))
-        overrides["_owned_runtime_context"] = session["_tool_snapshot_runtime_context"]
-        cwd = session.get("cwd")
-        if isinstance(cwd, str) and cwd:
-            overrides["cwd"] = cwd
-        register_task_env_overrides(task, overrides)
+        prepare_owned_tool_task(session, agent)
+        target_ready = params.get("target_digest") is not None
         if not authority():
             return _err(rid, 4092, "session workspace changed before tool dispatch")
         lease.start()
         dispatch = _ParentDispatch(agent, parent, root_tool=name, authority=authority)
         with _registered_tool_worker(agent), bind_tool_only_authority(authority), bind_subagent_parent(agent):
-            result = dispatch.dispatch(task, name, args, call_id=attempt)
+            result = dispatch.dispatch(task, name, args, call_id=attempt, target_digest=params.get("target_digest"))
         row = db.get_tool_attempt(owner, attempt)
         if row is None:
             return _err(rid, 4092, "tool was not admitted by the owning agent")

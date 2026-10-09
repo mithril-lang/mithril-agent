@@ -4358,6 +4358,7 @@ export interface ToolsCallParams {
   context_id: string
   revision: string
   timeout_ms?: number
+  target_digest?: string | null
 }
 export interface ToolsCallResult {
   protocol: 'hermes-owned-tool-call-v1'
@@ -4367,6 +4368,22 @@ export interface ToolsCallResult {
   duplicate: boolean
   observation: 'handler-return' | 'policy-result' | 'metadata-only' | 'unknown'
   output: unknown | null
+}
+export interface ToolsTargetPreviewParams {
+  session_id: string
+  name: string
+  arguments: Record<string, unknown>
+  context_id: string
+  revision: string
+}
+export interface ToolsTargetPreviewResult {
+  protocol: 'hermes-owned-target-preview-v1'
+  target_binding: ToolTargetBinding | null
+}
+export interface ToolTargetBinding {
+  coverage: 'partial'
+  digest: string
+  target: unknown
 }
 /** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
 export interface ClarifyRequestParams {
@@ -5378,6 +5395,8 @@ export interface RpcMethods {
   'tools.list': { params: _SessionScoped; result: ToolsetsListResult }
   /** The /tools listing grouped by toolset, including tools deferred behind the tool_search bridge. */
   'tools.show': { params: _SessionScoped; result: ToolsShowResult }
+  /** Resolve a partial target for exact owned arguments without invoking the handler; never a grant. */
+  'tools.target_preview': { params: ToolsTargetPreviewParams; result: ToolsTargetPreviewResult }
   /** Toolset summaries (no tool names) for the desktop Toolsets tab. */
   'toolsets.list': { params: _SessionScoped; result: ToolsetsListResult }
   /** Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable. */
@@ -5653,6 +5672,7 @@ export const RPC_METHODS = [
   'tools.configure',
   'tools.list',
   'tools.show',
+  'tools.target_preview',
   'toolsets.list',
   'usage.bars',
   'vault.add',

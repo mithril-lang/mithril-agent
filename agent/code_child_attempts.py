@@ -22,11 +22,13 @@ class CodeChildAttempts:
         if self.db is not None and not session:
             raise RuntimeError("Child attempt database requires the parent session")
 
-    def begin(self, ref, parent):
+    def begin(self, ref, parent, *, target_digest=None):
         if self.db is None:
             return
-        digest, _ = _digest({"name": ref.name, "args": ref.args, "task": ref.task_id,
-                             "parent": parent.call_id})
+        intent = {"name": ref.name, "args": ref.args, "task": ref.task_id, "parent": parent.call_id}
+        if target_digest is not None:
+            intent["target_digest"] = target_digest
+        digest, _ = _digest(intent)
         if not self.db.begin_tool_attempt(self.session, ref.call_id, parent.call_id, ref.name, digest):
             raise RuntimeError("Child tool attempt already exists; it must not be redispatched")
 

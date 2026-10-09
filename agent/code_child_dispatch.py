@@ -59,7 +59,7 @@ class _ParentDispatch:
             return f"Tool '{name}' is not available to this parent agent."
         return self.schemas.rejection(name)
 
-    def dispatch(self, task_id, name, args, *, call_id=None):
+    def dispatch(self, task_id, name, args, *, call_id=None, target_digest=None):
         from agent.code_child_attempts import _digest
         from agent.tool_executor import (
             _ToolCallRef, _detect_tool_failure, _emit_tool_complete_and_risk,
@@ -79,7 +79,7 @@ class _ParentDispatch:
         from agent.owned_target_binding import OwnedTargetBinding
         target_binding = (OwnedTargetBinding(self.schemas.registrations[name], args, task_id)
                           if self.authority is not None else None)
-        self.attempts.begin(ref, self.parent)
+        self.attempts.begin(ref, self.parent, target_digest=target_digest)
         dispatched = rejected_before_dispatch = False
 
         def execute(final_args):

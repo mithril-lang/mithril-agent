@@ -4219,6 +4219,24 @@
       }
     },
     {
+      "name": "tools.target_preview",
+      "summary": "Resolve a partial target for exact owned arguments without invoking the handler; never a grant.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ToolsTargetPreviewParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ToolsTargetPreviewResult"
+        }
+      }
+    },
+    {
       "name": "toolsets.list",
       "summary": "Toolset summaries (no tool names) for the desktop Toolsets tab.",
       "params": [
@@ -36197,6 +36215,31 @@
         "title": "ToolStartPayload",
         "type": "object"
       },
+      "ToolTargetBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "const": "partial",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target"
+          }
+        },
+        "required": [
+          "coverage",
+          "digest",
+          "target"
+        ],
+        "title": "ToolTargetBinding",
+        "type": "object"
+      },
       "ToolsAction": {
         "enum": [
           "enable",
@@ -36249,6 +36292,19 @@
             "minimum": 1,
             "title": "Timeout Ms",
             "type": "integer"
+          },
+          "target_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Digest"
           }
         },
         "required": [
@@ -36493,6 +36549,74 @@
           "runtime_snapshot"
         ],
         "title": "ToolsShowResult",
+        "type": "object"
+      },
+      "ToolsTargetPreviewParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "context_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Context Id",
+            "type": "string"
+          },
+          "revision": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "name",
+          "arguments",
+          "context_id",
+          "revision"
+        ],
+        "title": "ToolsTargetPreviewParams",
+        "type": "object"
+      },
+      "ToolsTargetPreviewResult": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol": {
+            "const": "hermes-owned-target-preview-v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "target_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolTargetBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "protocol",
+          "target_binding"
+        ],
+        "title": "ToolsTargetPreviewResult",
         "type": "object"
       },
       "ToolsetEntry": {

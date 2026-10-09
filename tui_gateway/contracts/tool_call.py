@@ -15,6 +15,26 @@ class ToolsCallParams(Params):
     context_id: str = Field(min_length=1, max_length=128)
     revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     timeout_ms: int = Field(default=120000, ge=1, le=120000, strict=True)
+    target_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class ToolsTargetPreviewParams(Params):
+    session_id: str = Field(min_length=1, max_length=512)
+    name: str = Field(min_length=1, max_length=256)
+    arguments: dict[str, JsonValue]
+    context_id: str = Field(min_length=1, max_length=128)
+    revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class ToolTargetBinding(Result):
+    coverage: Literal["partial"]
+    digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    target: JsonValue
+
+
+class ToolsTargetPreviewResult(Result):
+    protocol: Literal["hermes-owned-target-preview-v1"]
+    target_binding: ToolTargetBinding | None
 
 
 class ToolsCallResult(Result):
@@ -29,3 +49,5 @@ class ToolsCallResult(Result):
 
 method("tools.call", params=ToolsCallParams, result=ToolsCallResult,
        doc="Invoke one tool through the attached agent policy without model inference; replay returns metadata only.")
+method("tools.target_preview", params=ToolsTargetPreviewParams, result=ToolsTargetPreviewResult,
+       doc="Resolve a partial target for exact owned arguments without invoking the handler; never a grant.")

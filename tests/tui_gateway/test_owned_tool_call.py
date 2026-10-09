@@ -99,6 +99,91 @@ def _call(sessions, caller, target, name, args, request, **changes):
     return reply if reply is not None else sessions[caller]["wire"].replies.get(timeout=30)
 
 
+def _target_preview(sessions, caller, target, name, args, **changes):
+    import tui_gateway.server as server
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+
+    snapshot = session_tool_snapshot(sessions[target])
+    params = {"session_id": target, "name": name, "arguments": args,
+              "context_id": snapshot["context_id"], "revision": snapshot["revision"], **changes}
+    reply = server.dispatch({"jsonrpc": "2.0", "id": "target", "method": "tools.target_preview", "params": params},
+                            transport=sessions[caller]["transport"])
+    return reply if reply is not None else sessions[caller]["wire"].replies.get(timeout=30)
+
+
+@pytest.mark.platforms("posix")
+def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkeypatch):
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    for visit, owner in enumerate(["a", "b", "a"]):
+        home = Path(owned_sessions[owner]["profile_home"])
+        original, redirected = home / f"preview-original-{visit}", home / f"preview-redirected-{visit}"
+        original.mkdir()
+        redirected.mkdir()
+        alias = home / f"preview-alias-{visit}"
+        alias.symlink_to(original, target_is_directory=True)
+        args = {"path": str(alias / "note.txt"), "content": "approved content"}
+        preview = _target_preview(owned_sessions, owner, owner, "write_file", args)["result"]
+        binding = preview["target_binding"]
+        assert binding["coverage"] == "partial" and binding["target"]["path"] == str(original / "note.txt")
+        assert not (original / "note.txt").exists()
+        changed = _call(owned_sessions, owner, owner, "write_file", {**args, "content": "other"},
+                        f"different-{visit}", target_digest=binding["digest"])
+        assert changed["error"]["code"] == 4092 and not (original / "note.txt").exists()
+        alias.unlink()
+        alias.symlink_to(redirected, target_is_directory=True)
+        stale = _call(owned_sessions, owner, owner, "write_file", args, f"stale-preview-{visit}",
+                      target_digest=binding["digest"])
+        assert stale["error"]["code"] == 4092
+        assert not (original / "note.txt").exists() and not (redirected / "note.txt").exists()
+        fresh = _target_preview(owned_sessions, owner, owner, "write_file", args)["result"]["target_binding"]
+        assert fresh["digest"] != binding["digest"]
+
+        def redirect(*, args, next_call, **kwargs):
+            alias.unlink()
+            alias.symlink_to(original, target_is_directory=True)
+            return next_call(args)
+
+        manager._middleware["tool_execution"] = [redirect]
+        mid = _call(owned_sessions, owner, owner, "write_file", args, f"mid-preview-{visit}",
+                    target_digest=fresh["digest"])["result"]
+        assert mid["state"] == "rejected"
+        row = owned_sessions[owner]["agent"]._session_db.get_tool_attempt("same-durable-owner", mid["attempt_id"])
+        assert row["dispatched_at"] is None
+        assert not (original / "note.txt").exists() and not (redirected / "note.txt").exists()
+        manager._middleware.clear()
+        alias.unlink()
+        alias.symlink_to(redirected, target_is_directory=True)
+        result = _call(owned_sessions, owner, owner, "write_file", args, f"fresh-preview-{visit}",
+                       target_digest=fresh["digest"])["result"]
+        assert result["state"] == "returned" and (redirected / "note.txt").read_text() == "approved content"
+        replay = _call(owned_sessions, owner, owner, "write_file", args, f"fresh-preview-{visit}",
+                       target_digest=fresh["digest"])["result"]
+        assert replay["duplicate"] and replay["observation"] == "metadata-only"
+        conflict = _call(owned_sessions, owner, owner, "write_file", args, f"fresh-preview-{visit}",
+                         target_digest=binding["digest"])
+        assert conflict["error"]["code"] == 4092
+
+
+def test_owned_target_preview_respects_owner_and_unknown_tools(owned_sessions):
+    for owner, foreign in [("a", "b"), ("b", "a"), ("a", "b")]:
+        args = {"path": str(Path(owned_sessions[owner]["profile_home"]) / "owner.txt"), "content": "x"}
+        denied = _target_preview(owned_sessions, foreign, owner, "write_file", args)
+        assert denied["error"]["code"] == 4001
+        unknown = _target_preview(owned_sessions, owner, owner, "todo_list", {})["result"]
+        assert unknown["target_binding"] is None
+        unfrozen = _target_preview(owned_sessions, owner, owner, "terminal", {})
+        assert unfrozen["error"]["code"] == 4092
+        stale = _target_preview(owned_sessions, owner, owner, "write_file", args, context_id="0" * 32)
+        assert stale["error"]["code"] == 4092
+        call = _call(owned_sessions, owner, owner, "todo_list", {}, f"unknown-{owner}", target_digest="0" * 64)
+        assert call["error"]["code"] == 4092
+        assert not Path(args["path"]).exists()
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("stage", ["tool_request", "tool_execution", "pre_tool_call"])
 @pytest.mark.parametrize("tool", ["write_file", "execute_code"])
