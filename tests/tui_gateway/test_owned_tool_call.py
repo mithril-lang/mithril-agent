@@ -1095,15 +1095,22 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
         if config["desktopChatSource"]:
             assert config["desktopMainModule"], "actual Desktop Chat qualification requires its main module"
             qualifier_files += ["test/desktop-owned-network.test.ts"]
-        process = subprocess.Popen(
-            [node, str(fund / "node_modules/vitest/vitest.mjs"), "run", "--maxWorkers", "1", *qualifier_files],
-            cwd=fund / "apps/api", env={**os.environ, "MITHRIL_OWNED_BROWSER_FIXTURE": str(config_path),
-                                         "MITHRIL_OWNED_NATIVE_MAIN_MODULE": config["desktopMainModule"] or "",
-                                         "MITHRIL_OWNED_DESKTOP_CHAT_SOURCE": config["desktopChatSource"] or ""},
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = None
         try:
-            stdout, stderr = process.communicate(timeout=210)
-            assert process.returncode == 0, stdout + "\n" + stderr
+            outputs = []
+            for qualifier_file in qualifier_files:
+                # Each invariant family retains its existing bounded wait. New
+                # Desktop coverage must not consume the Web family's deadline.
+                process = subprocess.Popen(
+                    [node, str(fund / "node_modules/vitest/vitest.mjs"), "run", "--maxWorkers", "1", qualifier_file],
+                    cwd=fund / "apps/api", env={**os.environ, "MITHRIL_OWNED_BROWSER_FIXTURE": str(config_path),
+                                                 "MITHRIL_OWNED_NATIVE_MAIN_MODULE": config["desktopMainModule"] or "",
+                                                 "MITHRIL_OWNED_DESKTOP_CHAT_SOURCE": config["desktopChatSource"] or ""},
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout, stderr = process.communicate(timeout=210)
+                assert process.returncode == 0, stdout + "\n" + stderr
+                outputs.append(stdout)
+            stdout = "\n".join(outputs)
             for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny",
                          "js-alias", "python-alias"]:
                 assert f"local owned browser qualified: {mode}" in stdout, stdout
@@ -1143,7 +1150,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
             for owner in ["a", "b"]:
                 assert owned_sessions[owner]["agent"]._session_messages == original_histories[owner]
         finally:
-            if process.poll() is None:
+            if process is not None and process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
             config_path.unlink(missing_ok=True)
