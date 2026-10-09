@@ -122,7 +122,7 @@ def test_interrupted_decision_is_not_replayed(tmp_path, target, pause):
             assert wa.get_pending(wa.MEMORY, record['id']) == record
             assert decision_receipt(wa.MEMORY, record['id'])['state'] == 'applying'
             assert wa.discard_pending(wa.MEMORY, record['id']) is False
-            assert 'Nothing was repeated' in handle_pending_subcommand(wa.MEMORY, ['review', record['id']])
+            assert json.loads(handle_pending_subcommand(wa.MEMORY, ['review', record['id']]))['decision_mode'] == 'resolve'
             assert load_on_disk_store()._entries_for(target) == (['interrupted fact'] if pause == 'after' else [])
     finally:
         stop(children, coord)

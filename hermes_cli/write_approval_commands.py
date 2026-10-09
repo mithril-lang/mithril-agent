@@ -72,6 +72,9 @@ def handle_pending_subcommand(
         return _fmt_pending_list(subsystem)
     if sub == "review" and subsystem == wa.MEMORY:
         return _review_memory(rest)
+    if subsystem == wa.MEMORY and sub in {"resolve-saved", "resolve-unsaved"}:
+        from hermes_cli.write_approval_recovery import resolve
+        return resolve(rest, sub.removeprefix("resolve-"))
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
     if sub in {"reject", "deny", "drop"}:
@@ -115,8 +118,8 @@ def _review_memory(rest: List[str]) -> str:
     try:
         with pending_decision_lock(wa.MEMORY, rest[0]):
             if decision_receipt(wa.MEMORY, rest[0]) is not None:
-                return "A previous decision is already recorded or its outcome is unknown; " \
-                       "inspect pending and saved data. Nothing was repeated."
+                from hermes_cli.write_approval_recovery import review
+                return review(rest[0])
             record = wa.get_pending(wa.MEMORY, rest[0])
             if not record:
                 return f"No pending memory write with id '{rest[0]}'."

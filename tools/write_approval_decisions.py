@@ -64,12 +64,14 @@ def decision_receipt(subsystem: str, pending_id: str):
     return data
 
 
-def write_receipt(subsystem: str, record: dict, decision: str, state: str):
+def write_receipt(subsystem: str, record: dict, decision: str, state: str, *, resolution=None):
     """Private durable claim BEFORE an effect; caller holds pending_decision_lock."""
     digest = hashlib.sha256(json.dumps(record, sort_keys=True, ensure_ascii=False, allow_nan=False,
                                       separators=(',', ':')).encode()).hexdigest()
-    atomic_json_write(receipt_path(subsystem, record['id']), {'id': record['id'], 'decision': decision,
-                      'state': state, 'recordDigest': digest, 'updatedAt': time.time()}, mode=0o600, fsync_dir=True)
+    data = {'id': record['id'], 'decision': decision, 'state': state, 'recordDigest': digest, 'updatedAt': time.time()}
+    if resolution is not None:
+        data['resolution'] = resolution
+    atomic_json_write(receipt_path(subsystem, record['id']), data, mode=0o600, fsync_dir=True)
 
 
 def clear_failed_claim(subsystem: str, pending_id: str):
@@ -77,7 +79,7 @@ def clear_failed_claim(subsystem: str, pending_id: str):
     receipt_path(subsystem, pending_id).unlink()
 
 
-def finish_decision(subsystem: str, record: dict, decision: str):
+def finish_decision(subsystem: str, record: dict, decision: str, *, resolution=None):
     """Record the terminal outcome before removing exactly the claimed record."""
     from tools import write_approval as wa
     path = _path(subsystem, record['id'])
@@ -85,5 +87,6 @@ def finish_decision(subsystem: str, record: dict, decision: str):
         # A noncooperating filesystem writer replaced the queue entry. Preserve it.
         write_receipt(subsystem, record, decision, 'unknown')
         raise OSError('Pending proposal changed during the decision; inspect saved data. No decision will be repeated.')
-    write_receipt(subsystem, record, decision, 'applied' if decision == 'approve' else 'rejected')
+    terminal = {'approve': 'applied', 'reject': 'rejected', 'resolve-saved': 'applied', 'resolve-unsaved': 'rejected'}[decision]
+    write_receipt(subsystem, record, decision, terminal, resolution=resolution)
     path.unlink()

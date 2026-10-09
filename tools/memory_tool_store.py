@@ -276,8 +276,9 @@ class MemoryStore:
             extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)
 
-    def review_state(self, target: str):
-        """Capture data revision under the same lock used by every built-in writer."""
+    @contextmanager
+    def locked_review_snapshot(self, target: str):
+        """Yield the checked state and full entries while retaining writer custody."""
         from tools.memory_tool_revision import state
         if target not in {"memory", "user"}:
             raise ValueError("Invalid memory review target.")
@@ -286,7 +287,12 @@ class MemoryStore:
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
                 raise OSError("Saved memory could not be read for review.")
-            return state(path, raw)
+            yield {"state": state(path, raw), "entries": self._parse_entries(raw)}
+
+    def review_state(self, target: str):
+        """Capture data revision under the same lock used by every built-in writer."""
+        with self.locked_review_snapshot(target) as snapshot:
+            return snapshot["state"]
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
