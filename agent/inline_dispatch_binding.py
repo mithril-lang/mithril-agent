@@ -52,7 +52,9 @@ def memory_provider_identity(provider, *, effects=None):
     from agent.memory_provider_effects import declared_memory_effects
 
     encoded = json.dumps({"identity": signature() if signature else {},
-                          "effects": declared_memory_effects(provider) if effects is None else effects},
+                          "effects": declared_memory_effects(provider) if effects is None else effects,
+                          "target_hooks": [callable_identity(getattr(provider, attr, None)) for attr in
+                                           ("resolve_owned_tool_target", "bind_owned_tool_target")]},
                          sort_keys=True, allow_nan=False).encode()
     if len(encoded) > 128 * 1024:
         raise ValueError("memory provider identity exceeds owned limit")
@@ -96,6 +98,7 @@ class InlineDispatchBinding:
         # effects or target resolver. Built-in inline tools retain registry metadata.
         self.owns_effects = self.identity[0] in {"memory", "memory-manager", "context"}
         self.effect_manifest = None
+        self.target_resolver = self.target_scope = None
         if self.identity[0] == "memory":
             from agent.memory_provider_effects import declared_memory_effects
 
@@ -104,6 +107,12 @@ class InlineDispatchBinding:
             if memory_provider_identity(provider, effects=effects) != self.identity[2]:
                 raise ValueError("Memory provider changed during effect capture")
             self.effect_manifest = effects.get(name)
+            resolve = getattr(provider, "resolve_owned_tool_target", None)
+            scope = getattr(provider, "bind_owned_tool_target", None)
+            if resolve is not None:
+                self.target_resolver = lambda args, task: resolve(name, args)
+                if scope is not None:
+                    self.target_scope = lambda args, task, target: scope(name, args, target)
 
     def matches(self):
         from agent.inline_tool_executors import select_invoke_tool_executor

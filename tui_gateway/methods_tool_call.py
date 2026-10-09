@@ -64,7 +64,7 @@ def _tool_only_run(rid, params, session, agent, db):
                 or agent.session_id != owner or agent._session_db is not db):
             return False
         snapshot = session_tool_snapshot(session)
-        if target_ready:
+        if target_ready and not (dispatch is not None and dispatch.reviewed_target_consumed):
             try:
                 binding = owned_target_binding(session, snapshot, name, args, task)
                 if binding is None or binding["digest"] != params["target_digest"]:

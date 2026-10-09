@@ -138,7 +138,8 @@ class MemoryStore:
 
     def _write(self, sql: str, params=()) -> sqlite3.Cursor:
         cur = self._conn.execute(sql, params)
-        self._conn.commit()
+        if not self._entry.get("owned_transaction"):
+            self._conn.commit()
         return cur
 
     def add_fact(self, content: str, category: str = "general", tags: str = "") -> int:

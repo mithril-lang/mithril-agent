@@ -45,6 +45,7 @@ class _ParentDispatch:
         from agent.tool_dispatch_snapshot import ToolDispatchSnapshot
         self.schemas = ToolDispatchSnapshot(agent, self.names)
         self.active = True
+        self.reviewed_target_consumed = False
         self.thread = threading.get_ident()
         from agent.code_child_attempts import CodeChildAttempts
         self.attempts = CodeChildAttempts(agent, self.home, self.session)
@@ -86,7 +87,8 @@ class _ParentDispatch:
         # middleware rewrite. Capture before callbacks can mutate args in place.
         intent_digest = _digest(args)[0] if self.authority is not None else None
         from agent.owned_target_binding import OwnedTargetBinding
-        target_registration = None if self.schemas.inline[name].owns_effects else self.schemas.registrations[name]
+        target_registration = (self.schemas.inline[name] if self.schemas.inline[name].owns_effects
+                               else self.schemas.registrations[name])
         target_binding = (OwnedTargetBinding(target_registration, args, task_id)
                           if self.authority is not None else None)
         self.attempts.begin(ref, self.parent, target_digest=target_digest)
@@ -94,29 +96,42 @@ class _ParentDispatch:
 
         def execute(final_args):
             nonlocal dispatched, rejected_before_dispatch
-            # Recheck after middleware/plugin/approval waits, immediately before effect.
-            rejected = self.rejection(task_id, name)
-            if rejected is None and intent_digest is not None:
-                try:
-                    # Dispatch this private copy, so equality and the handler use
-                    # the same captured value even if a plugin retains its dict.
-                    final_args = json.loads(json.dumps(final_args, ensure_ascii=False, allow_nan=False))
-                    if _digest(final_args)[0] != intent_digest:
-                        rejected = "The owned tool intent changed after admission."
-                except (TypeError, ValueError, OverflowError, RecursionError):
-                    rejected = "The owned tool intent is no longer finite JSON."
-            if rejected is None and target_binding is not None:
-                rejected = target_binding.rejection(final_args, task_id)
-            if rejected:
+            from contextlib import nullcontext
+            from agent.memory_provider import OwnedToolTargetChanged
+
+            try:
+                scope = target_binding.execution_scope(final_args, task_id) if target_binding else nullcontext()
+                with scope:
+                    # Recheck after middleware/plugin/approval waits, immediately before effect.
+                    rejected = self.rejection(task_id, name)
+                    if rejected is None and intent_digest is not None:
+                        try:
+                            # Dispatch this private copy, so equality and the handler use
+                            # the same captured value even if a plugin retains its dict.
+                            final_args = json.loads(json.dumps(final_args, ensure_ascii=False, allow_nan=False))
+                            if _digest(final_args)[0] != intent_digest:
+                                rejected = "The owned tool intent changed after admission."
+                        except (TypeError, ValueError, OverflowError, RecursionError):
+                            rejected = "The owned tool intent is no longer finite JSON."
+                    if rejected is None and target_binding is not None:
+                        rejected = target_binding.rejection(final_args, task_id)
+                    if rejected:
+                        rejected_before_dispatch = True
+                        return tool_error(rejected)
+                    self.attempts.dispatch(ref)
+                    dispatched = True
+                    with self.schemas.bind_registration(name):
+                        result = self.agent._invoke_tool(name, final_args, task_id, ref.call_id,
+                            messages=getattr(self.agent, "_session_messages", None),
+                            pre_tool_block_checked=True, skip_tool_request_middleware=True,
+                            skip_tool_execution_middleware=True, tool_request_middleware_trace=list(ref.trace))
+                self.reviewed_target_consumed = bool(target_binding and target_binding.consumes_revision)
+                return result
+            except OwnedToolTargetChanged as exc:
+                if dispatched:
+                    raise
                 rejected_before_dispatch = True
-                return tool_error(rejected)
-            self.attempts.dispatch(ref)
-            dispatched = True
-            with self.schemas.bind_registration(name):
-                return self.agent._invoke_tool(name, final_args, task_id, ref.call_id,
-                    messages=getattr(self.agent, "_session_messages", None),
-                    pre_tool_block_checked=True, skip_tool_request_middleware=True,
-                    skip_tool_execution_middleware=True, tool_request_middleware_trace=list(ref.trace))
+                return tool_error(str(exc))
 
         managed = _run_agent_tool_execution_middleware(self.agent,
             **ref.middleware_kwargs(), execute=execute)

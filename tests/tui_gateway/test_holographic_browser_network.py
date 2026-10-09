@@ -90,6 +90,7 @@ def test_holographic_network_consent_and_profile_custody(owned_sessions, monkeyp
         for label, key in (("a", owner), ("b", foreign)):
             session = owned_sessions[key]
             result[label] = {
+                "database": stores[key]._key,
                 "facts": [dict(row) for row in stores[key]._conn.execute(
                     "SELECT fact_id, content, category, tags, trust_score FROM facts ORDER BY fact_id")],
                 "frozen": session["agent"].tools,

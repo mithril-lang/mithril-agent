@@ -12,10 +12,15 @@ import logging
 import re
 import threading
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class OwnedToolTargetChanged(RuntimeError):
+    """A provider refused a reviewed target before beginning its operation."""
 
 
 def ctx_bound(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -154,6 +159,27 @@ class MemoryProvider(ABC):
         target; owned hosts bind them to the selected provider execution identity.
         """
         return {}
+
+    def resolve_owned_tool_target(self, tool_name: str, args: Dict[str, Any]):
+        """Optional bounded read-only target/revision for an already opened store.
+
+        Never initialize, probe availability or grant access here. A provider that
+        resolves a target must also implement the atomic binding scope below.
+        Data revisions belong here, never in cached prompt/route identities.
+        """
+        return None
+
+    @contextmanager
+    def bind_owned_tool_target(self, tool_name: str, args: Dict[str, Any], target):
+        """Validate the captured target and hold its fence through the operation.
+
+        Raise OwnedToolTargetChanged before effects when stale/unavailable. This
+        opt-in contract must prevent competing writes between check and commit.
+        Unknown targets preserve legacy dispatch without claiming data custody.
+        """
+        if target is not None:
+            raise OwnedToolTargetChanged("Provider target has no atomic execution scope")
+        yield
 
     def shutdown(self) -> None:
         """Clean shutdown — flush queues, close connections."""

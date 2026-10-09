@@ -203,14 +203,30 @@ class HolographicMemoryProvider(MemoryProvider):
         }
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        from .owned_target import operation_provider
+        selected = operation_provider(self)
         if tool_name not in self._TOOL_HANDLERS:
             return tool_error(f"Unknown tool: {tool_name}")
         try:
-            return self._TOOL_HANDLERS[tool_name](self, args)
+            return self._TOOL_HANDLERS[tool_name](selected, args)
         except KeyError as exc:
+            if (selected._store and selected._store._entry is not None
+                    and selected._store._entry.get("owned_transaction")):
+                selected._store._entry["owned_operation_error"] = True
             return tool_error(f"Missing required argument: {exc}")
         except Exception as exc:
+            if (selected._store and selected._store._entry is not None
+                    and selected._store._entry.get("owned_transaction")):
+                selected._store._entry["owned_operation_error"] = True
             return tool_error(str(exc))
+
+    def resolve_owned_tool_target(self, tool_name: str, args: Dict[str, Any]):
+        from .owned_target import resolve_target
+        return resolve_target(self, tool_name, args)
+
+    def bind_owned_tool_target(self, tool_name: str, args: Dict[str, Any], target):
+        from .owned_target import bind_target
+        return bind_target(self, tool_name, args, target)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # is_truthy_value: auto_extract is a string enum ("false"/"true"); plain truthiness would treat "false" as on.

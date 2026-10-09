@@ -36,7 +36,8 @@ def test_provider_effects_do_not_borrow_registry_collision(owned_sessions, monke
         assert manifests["fact_feedback"]["effects"] == ["memory.read", "memory.write"]
         args = {"action": "add", "content": f"real provider effect {visit}"}
         preview = _target_preview(owned_sessions, owner, owner, "fact_store", args)["result"]
-        assert preview["target_binding"] is None
+        assert preview["target_binding"]["target"]["namespace"] == "selected-provider-memory"
+        assert preview["target_binding"]["target"]["database"] == stores[owner]._key
         before = rows(stores)
         result = _call(owned_sessions, owner, owner, "fact_store", args, f"provider-manifest-{visit}")["result"]
         assert result["state"] == "returned", result

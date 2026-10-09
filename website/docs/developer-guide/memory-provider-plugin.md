@@ -505,3 +505,10 @@ For wrapper-style providers that keep their runtime in a sidecar venv outside He
 - **Sidecar isolation.** A plugin root with no dependency surface never joins the pm workspace dependency union; a resync or venv rebuild neither provisions deps for it nor touches its tree.
 - **Conflicts.** For native shared-venv plugins, an unsatisfiable dependency union fails loudly: the candidate plugin stays unenabled and unimported (the admission authority refuses before publishing config, reporting the plugin identity plus the resolver's reason, with a re-enable/retry path and a machine-readable pm receipt). Dependency resolution does not automatically disable other plugins or run a bisect. Explicit plugin updates, removal, and independent security gates are separate operations.
 
+
+
+## Optional owned target contract
+
+`resolve_owned_tool_target(tool_name, args)` may return a bounded, finite JSON target from an already opened selected store. The default returns None. Never initialize a store, probe an account or perform network discovery during this read. Mutable data revisions belong to the target, not cached prompt metadata or provider identity.
+
+`bind_owned_tool_target(tool_name, args, target)` is a context manager spanning final admission, handler execution and commit. Providers must compare the reviewed target before any effect, pin the selected destination and fence competing writers until commit. Raise `agent.memory_provider.OwnedToolTargetChanged` before dispatch to refuse stale targets. The default permits unresolved legacy routes and refuses resolved targets without an atomic scope. Handler failures must roll back; uncertain outcomes must not be replayed. Holographic demonstrates this contract using an existing SQLite connection and transaction, without schema migration.
