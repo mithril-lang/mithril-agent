@@ -158,6 +158,11 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "byterover"
 
+    def identity_signature(self) -> Dict[str, Any]:
+        # Cheap on uninitialized gateway instances; mutable data and secrets do
+        # not belong to route identity. The owned fence hashes these privately.
+        return {"byterover": {"cwd": self._cwd, "session_id": self._session_id}}
+
     def is_available(self) -> bool:
         """Check if brv CLI is installed. No network calls."""
         return _resolve_brv_path() is not None
