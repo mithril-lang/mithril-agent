@@ -112,3 +112,67 @@ def test_owned_retaindb_project_cannot_redirect(local_http, owned_sessions, monk
         assert duplicate["duplicate"] and duplicate["output"] is None and len(local_http) == len(before) + 1
         for key, row in owned_sessions.items():
             assert (row["agent"].tools, row["history"]) == frozen[key]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("owned_sessions", [opened_provider], indirect=True)
+@pytest.mark.parametrize("path,name,args", [
+    ("foreground", "retaindb_remember", {"content": "captured HTTP fact"}),
+    ("foreground", "retaindb_search", {"query": "captured HTTP fact"}),
+    ("foreground", "retaindb_profile", {}),
+    ("background", "retaindb_remember", {"content": "captured HTTP turn"}),
+])
+def test_retaindb_execution_keeps_selected_project_after_capture(local_http, owned_sessions, monkeypatch, path, name, args):
+    import plugins.memory.retaindb as retaindb
+    import tui_gateway.server as server
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+    providers = {key: row["agent"]._memory_manager.providers[0] for key, row in owned_sessions.items()}
+    projects = {key: provider._client.project for key, provider in providers.items()}
+    frozen = {key: copy.deepcopy((row["agent"].tools, row["history"])) for key, row in owned_sessions.items()}
+    for visit, owner in enumerate(("a", "b", "a")):
+        foreign = "b" if owner == "a" else "a"
+        provider = providers[owner]
+        before = copy.deepcopy(local_http)
+        try:
+            if path == "foreground":
+                entry = retaindb._TOOLS[name]
+                def late(selected, arguments, value):
+                    provider._client.project = projects[foreign]
+                    return entry[1](selected, arguments, value)
+                with monkeypatch.context() as patch:
+                    patch.setitem(retaindb._TOOLS, name, (entry[0], late))
+                    result = _call(owned_sessions, owner, owner, name, args, f"rdb-capture-{name}-{visit}")["result"]
+                assert result["output"] is None and result["observation"] == "unknown", result
+            else:
+                arrived, release, complete = threading.Event(), threading.Event(), threading.Event()
+                worker = provider._queue
+                flush = worker._flush_row
+                def gated(*values):
+                    arrived.set()
+                    assert release.wait(10)
+                    try:
+                        return flush(*values)
+                    finally:
+                        complete.set()
+                with monkeypatch.context() as patch:
+                    patch.setattr(worker, "_flush_row", gated)
+                    with server._session_profile_runtime_scope(owned_sessions[owner], hydrate_secrets=False):
+                        provider.sync_turn(args["content"], "fixture assistant", session_id="same-durable-owner")
+                    try:
+                        assert arrived.wait(10)
+                        provider._client.project = projects[foreign]
+                    finally:
+                        release.set()
+                        assert complete.wait(10)
+                assert worker._execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 0
+        finally:
+            provider._client.project = projects[owner]
+        assert local_http[:len(before)] == before
+        assert len(local_http) == len(before) + 1
+        assert local_http[-1]["project"] == projects[owner], local_http[-1]
+        if path == "foreground":
+            replay = _call(owned_sessions, owner, owner, name, args, f"rdb-capture-{name}-{visit}")["result"]
+            assert replay["duplicate"] and replay["output"] is None and len(local_http) == len(before) + 1
+            session_tool_snapshot(owned_sessions[owner])
+        for key, row in owned_sessions.items():
+            assert (row["agent"].tools, row["history"]) == frozen[key]
