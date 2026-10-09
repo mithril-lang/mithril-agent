@@ -82,5 +82,6 @@ class ToolDispatchSnapshot:
     def bind_registration(self, name):
         from agent.inline_dispatch_binding import bind_inline_dispatch
         from tools.dispatch_binding import bind_dispatch_registration
-        with bind_dispatch_registration(self.registrations[name]), bind_inline_dispatch(self.inline[name]):
+        nested = self.registrations if name == "tool_call" else None
+        with bind_dispatch_registration(self.registrations[name], nested_bindings=nested), bind_inline_dispatch(self.inline[name]):
             yield

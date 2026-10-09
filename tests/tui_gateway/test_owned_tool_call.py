@@ -299,6 +299,58 @@ def test_owned_deferred_registration_retires_approval(owned_sessions, monkeypatc
     assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts(agent.session_id)["attempts"] == []
 
 
+def test_owned_deferred_resolution_cannot_redirect_execution(owned_sessions, monkeypatch):
+    import model_tools
+    from tools.registry import registry
+    from tools.tool_search import bridge_tool_schemas
+
+    monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
+    monkeypatch.setattr(registry, "_generation", registry._generation)
+    session = owned_sessions["a"]
+    agent = session["agent"]
+    home = Path(session["profile_home"])
+    entry = registry.get_entry("write_file")
+    name = "owned_deferred_write"
+    schema = {**copy.deepcopy(entry.schema), "name": name}
+
+    def register():
+        registry.register(name=name, toolset="qualification-deferred", schema=schema,
+                          handler=entry.handler, check_fn=lambda: True, scope=str(home), override=True)
+
+    register()
+    agent.enabled_toolsets = ["qualification-deferred"]
+    agent.tools = bridge_tool_schemas(1, name)
+    agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+    history = copy.deepcopy(agent._session_messages)
+    resolve = model_tools._dispatch_bridge_tool
+    replacements = []
+
+    def replace_after_resolution(*args, **kwargs):
+        result = resolve(*args, **kwargs)
+        if args[0] == "tool_call" and result[1] is not None:
+            register()
+            replacements.append(True)
+        return result
+
+    monkeypatch.setattr(model_tools, "_dispatch_bridge_tool", replace_after_resolution)
+    target = home / "deferred-resolution-stale"
+    args = {"calls": [{"name": name, "arguments": {"path": str(target), "content": "owned"}}]}
+    reply = _call(owned_sessions, "a", "a", "tool_call", args, "deferred-resolution")
+    assert replacements == [True], reply
+    assert not target.exists(), reply
+    row = agent._session_db.get_tool_attempt(agent.session_id, "rpc:deferred-resolution")
+    assert row["state"] == "returned-error", row
+    replay = _call(owned_sessions, "a", "a", "tool_call", args, "deferred-resolution")
+    assert replay["result"]["duplicate"] and replay["result"]["output"] is None
+    assert replacements == [True]
+    monkeypatch.setattr(model_tools, "_dispatch_bridge_tool", resolve)
+    fresh = _call(owned_sessions, "a", "a", "tool_call", args, "deferred-resolution-fresh")
+    assert target.read_text() == "owned" and fresh["result"]["state"] == "returned", fresh
+    assert replacements == [True]
+    assert agent._session_messages == history
+    assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts(agent.session_id)["attempts"] == []
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("tool", ["read_file", "write_file"])
 def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkeypatch, tool):

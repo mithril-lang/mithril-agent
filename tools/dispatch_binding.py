@@ -59,8 +59,10 @@ def capture_dispatch_binding(registry, name):
 
 
 @contextmanager
-def bind_dispatch_registration(binding):
-    token = _CURRENT.set(binding)
+def bind_dispatch_registration(binding, *, nested_bindings=None):
+    # A deferred wrapper resolves a different registry name inside this scope.
+    # Only the parent's captures may follow it; current discovery is not custody.
+    token = _CURRENT.set(dict(nested_bindings) if nested_bindings is not None else binding)
     try:
         yield
     finally:
@@ -69,6 +71,10 @@ def bind_dispatch_registration(binding):
 
 def resolve_dispatch_handler(registry, name, entry, scope=None):
     binding = _CURRENT.get()
+    if isinstance(binding, dict):
+        if name not in binding:
+            raise RuntimeError("Tool has no registration in the authorized parent dispatch")
+        binding = binding[name]
     if binding is None or binding.registry is not registry or binding.name != name:
         return entry.handler, entry.is_async
     # Commit selection under the existing registry lock, then invoke the captured
