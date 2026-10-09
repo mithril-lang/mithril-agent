@@ -29,7 +29,8 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
     from hermes_cli.web_routers import chat_ws
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tools import write_approval as wa
-    from tools.memory_tool import load_on_disk_store
+    from tools.memory_tool import load_on_disk_store, MemoryStore
+    from tools.write_approval_decisions import pending_decision_lock, write_receipt, decision_receipt
     import tui_gateway.server as server
     from tui_gateway.transport import current_transport
     from tui_gateway.ws import WSTransport
@@ -67,6 +68,32 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
     with server._session_profile_runtime_scope(owned_sessions["a"], hydrate_secrets=False):
         record = wa.stage_write(wa.MEMORY, {"action": "add", "target": "memory", "content": "retired full body"}, summary="retired proposal", origin="foreground")
     retired = {"owner": "a", "cycle": -1, "target": "memory", "decision": "reject", "id": record["id"], "summary": record["summary"], "content": "retired full body"}
+    recovery = []
+    saved = {"a": [], "b": []}
+    for cycle, owner in enumerate(("a", "b", "a")):
+        for target, choice in (("memory", "saved"), ("user", "unsaved")):
+            content = f"uncertain-{owner}-{cycle}-{target}: 全文の保存結果"
+            with server._session_profile_runtime_scope(owned_sessions[owner], hydrate_secrets=False):
+                record = wa.stage_write(wa.MEMORY, {"action": "add", "target": target, "content": content}, summary=content, origin="foreground")
+                with pending_decision_lock(wa.MEMORY, record["id"]):
+                    write_receipt(wa.MEMORY, record, "approve", "applying")
+                    if choice == "saved":
+                        assert MemoryStore().add(target, content)["success"]
+                        saved[owner].append(content)
+            recovery.append({"owner": owner, "cycle": cycle, "target": target, "decision": "resolve-" + choice,
+                             "id": record["id"], "summary": record["summary"], "content": content,
+                             "lost": cycle == 2 and target == "user"})
+    with server._session_profile_runtime_scope(owned_sessions["a"], hydrate_secrets=False):
+        with pending_decision_lock(wa.MEMORY, retired["id"]):
+            write_receipt(wa.MEMORY, wa.get_pending(wa.MEMORY, retired["id"]), "approve", "unknown")
+    retired["decision"] = "resolve-unsaved"
+    for owner in expected:
+        expected[owner] = saved[owner] + expected[owner]
+    lost_id = next(row["id"] for row in proposals if row["lost"])
+    lost_commands = {f"memory approve {lost_id}": "electron-approve",
+                     f"memory resolve-unsaved {recovery[-1]['id']}": "electron-closure"}
+    proposals.extend(recovery)
+    closure_snapshots = []
     delayed, release = threading.Event(), threading.Event()
     lost = []
     frames, armed = [], {}
@@ -76,14 +103,24 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
     def record_method(name, handler):
         def handle(rid, params):
             frames.append((name, dict(params)))
-            result = handler(rid, params)
             command = params.get("command", "").lstrip("/")
+            before = None
+            if command.startswith(("memory resolve-saved ", "memory resolve-unsaved ")):
+                with server._session_profile_runtime_scope(server._sessions[params["session_id"]], hydrate_secrets=False):
+                    before = {key: load_on_disk_store().review_state(key) for key in ("memory", "user")}
+            result = handler(rid, params)
+            if before is not None:
+                with server._session_profile_runtime_scope(server._sessions[params["session_id"]], hydrate_secrets=False):
+                    after = {key: load_on_disk_store().review_state(key) for key in ("memory", "user")}
+                assert after == before
+                closure_snapshots.append(before)
             if command == f"memory review {retired['id']}" and not delayed.is_set():
                 delayed.set()
                 assert release.wait(timeout=15)
-            if command.startswith(f"memory approve {proposals[-2]['id']} "):
+            key = " ".join(command.split()[:3])
+            if key in lost_commands:
                 assert "result" in result, result
-                armed[(id(current_transport()), rid)] = True
+                armed[(id(current_transport()), rid)] = lost_commands[key]
             return result
         return handle
 
@@ -91,10 +128,11 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
         monkeypatch.setitem(server._methods, name, record_method(name, handler))
 
     def write(transport, frame):
-        if armed.pop((id(transport), frame.get("id")), False):
+        marker = armed.pop((id(transport), frame.get("id")), None)
+        if marker:
             with server._session_profile_runtime_scope(owned_sessions["a"], hydrate_secrets=False):
                 assert load_on_disk_store()._entries_for("memory") == expected["a"]
-            lost.append(True)
+            lost.append(marker)
             asyncio.run_coroutine_threadsafe(transport._ws.close(code=1011), transport._loop).result(timeout=5)
             return False
         return original_write(transport, frame)
@@ -102,7 +140,8 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
     monkeypatch.setattr(WSTransport, "write", write)
     monkeypatch.setattr(web.app.state, "auth_required", True, raising=False)
     monkeypatch.setattr(chat_ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
-    monkeypatch.setattr(server, "_profile_home", lambda profile: Path(owned_sessions[profile]["profile_home"]) if profile in owned_sessions else None)
+    web_owner = [None]
+    monkeypatch.setattr(server, "_profile_home", lambda profile: Path(owned_sessions[profile or web_owner[0]]["profile_home"]) if (profile or web_owner[0]) in owned_sessions else None)
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 600)
     for name in ("_ensure_skin_watcher", "_ensure_lease_watcher", "_start_backend_heartbeat_refresher", "_schedule_startup_orphan_sweep"):
         monkeypatch.setattr(server, name, lambda: None)
@@ -115,8 +154,8 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
             raise HTTPException(403)
 
     @app.post("/qualification/ticket")
-    async def ticket(x_qualification_issuer: str = Header(default="")):
-        authorize(x_qualification_issuer)
+    async def ticket(x_qualification_issuer: str = Header(default=""), x_fixture_issuer: str = Header(default="")):
+        authorize(x_qualification_issuer or x_fixture_issuer)
         return {"ticket": mint_ticket(user_id="fixture-owner", provider="stub")}
 
     @app.get("/qualification/state")
@@ -167,11 +206,45 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
             if child.poll() is None:
                 child.kill()
                 child.wait(timeout=5)
-        assert delayed.is_set() and lost == [True]
+        web_rows = []
+        fund = request.config.getoption("--owned-browser-fund-root")
+        if fund:
+            fund = Path(fund)
+            for cycle, owner in enumerate(("a", "b", "a")):
+                rows = []
+                with server._session_profile_runtime_scope(owned_sessions[owner], hydrate_secrets=False):
+                    for target, choice in (("memory", "saved"), ("user", "unsaved")):
+                        content = f"web-uncertain-{owner}-{cycle}-{target}: 全文の保存結果"
+                        record = wa.stage_write(wa.MEMORY, {"action": "add", "target": target, "content": content}, summary=content, origin="foreground")
+                        with pending_decision_lock(wa.MEMORY, record["id"]):
+                            write_receipt(wa.MEMORY, record, "approve", "applying")
+                            if choice == "saved":
+                                assert MemoryStore().add(target, content)["success"]
+                                expected[owner].append(content)
+                        rows.append({"owner": owner, "id": record["id"], "target": target, "decision": "resolve-" + choice, "content": content, "lost": cycle == 2 and target == "user"})
+                if cycle == 2:
+                    lost_commands[f"memory resolve-unsaved {rows[-1]['id']}"] = "web-closure"
+                web_owner[0] = owner
+                web_config = tmp_path / f"web-recovery-{cycle}.json"
+                web_config.write_text(json.dumps({"url": config["origin"].replace("http:", "ws:") + "/api/ws",
+                    "ticketUrl": config["origin"] + "/qualification/ticket", "issuer": issuer,
+                    "browserExecutable": request.config.getoption("--owned-browser-executable"), "reviewProposals": rows}))
+                env["MITHRIL_OWNED_BROWSER_FIXTURE"] = str(web_config)
+                completed = subprocess.run([str(fund / "node_modules/.bin/vitest"), "run", "test/memory-review-network.test.ts", "--maxWorkers=1"],
+                    cwd=fund / "apps/api", env=env, capture_output=True, text=True, timeout=110)
+                if output:
+                    (Path(output) / f"memory-recovery-web-{cycle}.log").write_text(completed.stdout + completed.stderr)
+                assert completed.returncode == 0, completed.stdout + completed.stderr
+                web_rows.extend(rows)
+        assert delayed.is_set() and lost == ["electron-approve", "electron-closure"] + (["web-closure"] if fund else [])
         assert all(name not in {"prompt.submit", "session.create", "command.dispatch"} for name, _ in frames)
-        decisions = [params["command"].lstrip("/") for name, params in frames if name == "slash.exec" and params.get("command", "").lstrip("/").startswith(("memory approve ", "memory reject "))]
-        for row in proposals + [retired]:
+        decisions = [params["command"].lstrip("/") for name, params in frames if name == "slash.exec" and params.get("command", "").lstrip("/").startswith(("memory approve ", "memory reject ", "memory resolve-saved ", "memory resolve-unsaved "))]
+        for row in proposals + [retired] + web_rows:
             assert sum(command.startswith(f"memory {row['decision']} {row['id']} ") for command in decisions) == 1
+        assert len(closure_snapshots) == 7 + len(web_rows)
+        for row in recovery + [retired] + web_rows:
+            with server._session_profile_runtime_scope(owned_sessions[row["owner"]], hydrate_secrets=False):
+                assert decision_receipt(wa.MEMORY, row["id"])["resolution"] == row["decision"].removeprefix("resolve-")
         for owner, session in owned_sessions.items():
             with server._session_profile_runtime_scope(session, hydrate_secrets=False):
                 store = load_on_disk_store()
