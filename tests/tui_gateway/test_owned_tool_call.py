@@ -18,6 +18,11 @@ def _qualification_groups(config):
                        "^releases exact Desktop native intents", "native-main-owned-network"))
     if config["desktopChatSource"]:
         groups.append(("test/desktop-owned-network.test.ts", None, "desktop-owned-network"))
+    # Qualify the current isolated Electron boundary before independent Web
+    # work can consume its own deadline and prevent reaching this diagnostic.
+    # All enabled families and final receipt/history assertions stay required.
+    if config["desktopChatSource"]:
+        groups.insert(0, groups.pop())
     return groups
 
 
