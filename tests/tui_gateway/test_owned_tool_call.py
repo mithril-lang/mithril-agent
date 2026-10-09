@@ -997,15 +997,108 @@ def test_owned_target_preview_respects_owner_and_unknown_tools(owned_sessions):
         args = {"path": str(Path(owned_sessions[owner]["profile_home"]) / "owner.txt"), "content": "x"}
         denied = _target_preview(owned_sessions, foreign, owner, "write_file", args)
         assert denied["error"]["code"] == 4001
-        unknown = _target_preview(owned_sessions, owner, owner, "todo_list", {})["result"]
+        unknown = _target_preview(owned_sessions, owner, owner, "execute_code", {})["result"]
         assert unknown["target_binding"] is None
         unfrozen = _target_preview(owned_sessions, owner, owner, "terminal", {})
         assert unfrozen["error"]["code"] == 4092
         stale = _target_preview(owned_sessions, owner, owner, "write_file", args, context_id="0" * 32)
         assert stale["error"]["code"] == 4092
-        call = _call(owned_sessions, owner, owner, "todo_list", {}, f"unknown-{owner}", target_digest="0" * 64)
+        call = _call(owned_sessions, owner, owner, "execute_code", {}, f"unknown-{owner}", target_digest="0" * 64)
         assert call["error"]["code"] == 4092
         assert not Path(args["path"]).exists()
+
+
+def test_owned_todo_target_preserves_profile_identity_and_replay(owned_sessions):
+    frozen = {owner: copy.deepcopy((session["agent"].tools, session["history"]))
+              for owner, session in owned_sessions.items()}
+    identities = {}
+    for visit, owner in enumerate(["a", "b", "a"]):
+        foreign = "b" if owner == "a" else "a"
+        agent = owned_sessions[owner]["agent"]
+        other = owned_sessions[foreign]["agent"]
+        before, foreign_before = agent._todo_store.snapshot(), other._todo_store.snapshot()
+        args = {"todos": [{"id": "1", "content": f"owned-{owner}-{visit}", "status": "pending"}]}
+        preview = _target_preview(owned_sessions, owner, owner, "todo_list", args)["result"]["target_binding"]
+        foreign_preview = _target_preview(owned_sessions, foreign, foreign, "todo_list", args)["result"]["target_binding"]
+        assert preview is not None and foreign_preview is not None
+        target = preview["target"]
+        assert target["namespace"] == "selected-session-store" and target["store"] == "todo-list"
+        assert target["sessionId"] == agent.session_id == other.session_id
+        assert len(target["ownerDigest"]) == 64
+        assert target["ownerDigest"] != foreign_preview["target"]["ownerDigest"]
+        assert owned_sessions[owner]["profile_home"] not in json.dumps(target)
+        if owner in identities:
+            assert identities[owner] == target
+        identities[owner] = target
+        assert _target_preview(owned_sessions, foreign, owner, "todo_list", args)["error"]["code"] == 4001
+        denied = _call(owned_sessions, owner, owner, "todo_list", args, f"todo-foreign-{visit}",
+                       target_digest=foreign_preview["digest"])
+        assert denied["error"]["code"] == 4092
+        assert agent._todo_store.snapshot() == before and other._todo_store.snapshot() == foreign_before
+        request = f"todo-bound-{visit}"
+        result = _call(owned_sessions, owner, owner, "todo_list", args, request,
+                       target_digest=preview["digest"])["result"]
+        assert result["state"] == "returned", result
+        written = agent._todo_store.snapshot()
+        assert written["todos"][0]["content"] == args["todos"][0]["content"]
+        assert written["revision"] == before["revision"] + 1
+        replay = _call(owned_sessions, owner, owner, "todo_list", args, request,
+                       target_digest=preview["digest"])["result"]
+        assert replay["duplicate"] and replay["observation"] == "metadata-only" and replay["output"] is None
+        assert agent._todo_store.snapshot() == written and other._todo_store.snapshot() == foreign_before
+        for key, session in owned_sessions.items():
+            assert (session["agent"].tools, session["history"]) == frozen[key]
+
+
+@pytest.mark.parametrize("stage", ["tool_request", "tool_execution", "pre_tool_call"])
+def test_owned_todo_target_owner_change_is_rejected_before_effect(owned_sessions, monkeypatch, stage):
+    import tui_gateway.server as server
+    from hermes_cli.plugins import PluginManager
+    from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    for visit, owner in enumerate(["a", "b", "a"]):
+        session = owned_sessions[owner]
+        agent = session["agent"]
+        before = {key: value["agent"]._todo_store.snapshot() for key, value in owned_sessions.items()}
+        args = {"todos": [{"id": "1", "content": "unapproved owner", "status": "pending"}]}
+        preview = _target_preview(owned_sessions, owner, owner, "todo_list", args)["result"]["target_binding"]
+
+        def redirect(*, args, next_call=None, **kwargs):
+            task = f"tool-only:{agent.session_id}"
+            overrides = dict(resolve_task_overrides(task))
+            register_task_env_overrides(task, {**overrides, "_owned_session_id": "foreign-owner"})
+            if stage == "pre_tool_call":
+                return {"action": "continue"}
+            return {"args": args} if stage == "tool_request" else next_call(args)
+
+        if stage == "pre_tool_call":
+            manager._hooks[stage] = [redirect]
+        else:
+            manager._middleware[stage] = [redirect]
+        request = f"todo-owner-change-{stage}-{visit}"
+        result = _call(owned_sessions, owner, owner, "todo_list", args, request,
+                       target_digest=preview["digest"])["result"]
+        # Revoked authority suppresses the policy body at the disclosure boundary.
+        assert result["state"] == "rejected" and result["observation"] == "unknown" and result["output"] is None, result
+        row = agent._session_db.get_tool_attempt(agent.session_id, result["attempt_id"])
+        assert row["dispatched_at"] is None
+        assert {key: value["agent"]._todo_store.snapshot() for key, value in owned_sessions.items()} == before
+        manager._hooks.clear()
+        manager._middleware.clear()
+        replay = _call(owned_sessions, owner, owner, "todo_list", args, request,
+                       target_digest=preview["digest"])["result"]
+        assert replay["duplicate"] and replay["output"] is None
+        # A fresh task preparation restores only the owning host identity.
+        fresh = _target_preview(owned_sessions, owner, owner, "todo_list", args)["result"]["target_binding"]
+        assert fresh == preview
+        result = _call(owned_sessions, owner, owner, "todo_list", args, f"fresh-{request}",
+                       target_digest=fresh["digest"])["result"]
+        assert result["state"] == "returned", result
+        with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+            assert resolve_task_overrides(f"tool-only:{agent.session_id}")["_owned_session_id"] == agent.session_id
 
 
 @pytest.mark.platforms("posix")
@@ -2353,11 +2446,12 @@ def test_owned_inline_store_replacement_retires_approval(owned_sessions, monkeyp
     a, b = owned_sessions["a"], owned_sessions["b"]
     approved = session_tool_snapshot(a)
     foreign = session_tool_snapshot(b)
+    args = ({"todos": [{"id": "1", "content": "must not reach replacement", "status": "pending"}]}
+            if name == "todo_list" else {"action": "add", "content": "must not reach replacement"})
+    target = _target_preview(owned_sessions, "a", "a", name, args)["result"]["target_binding"]
     original = getattr(a["agent"], attribute)
     replacement = TodoStore() if name == "todo_list" else MemoryStore()
     monkeypatch.setattr(a["agent"], attribute, replacement)
-    args = ({"todos": [{"id": "1", "content": "must not reach replacement", "status": "pending"}]}
-            if name == "todo_list" else {"action": "add", "content": "must not reach replacement"})
     reply = _call(owned_sessions, "a", "a", name, args, "stale-inline-store",
                   context_id=approved["context_id"], revision=approved["revision"])
     if name == "todo_list":
@@ -2377,3 +2471,10 @@ def test_owned_inline_store_replacement_retires_approval(owned_sessions, monkeyp
     assert restored["context_id"] not in {approved["context_id"], changed["context_id"]}
     assert restored["definitions"] == approved["definitions"]
     assert session_tool_snapshot(b) == foreign
+    if name == "todo_list":
+        restored_target = _target_preview(owned_sessions, "a", "a", name, args)["result"]["target_binding"]
+        assert restored_target["target"] == target["target"]
+        assert restored_target["digest"] != target["digest"]
+        denied = _call(owned_sessions, "a", "a", name, args, "restored-store-stale-target", target_digest=target["digest"])
+        assert denied["error"]["code"] == 4092
+        assert original.read() == [] and replacement.read() == []

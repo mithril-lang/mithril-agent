@@ -11,6 +11,7 @@ def prepare_owned_tool_task(session, agent):
     task = f"tool-only:{agent.session_id}"
     overrides = dict(resolve_task_overrides(agent.session_id))
     overrides["_owned_runtime_context"] = session["_tool_snapshot_runtime_context"]
+    overrides["_owned_session_id"] = agent.session_id
     cwd = session.get("cwd")
     if isinstance(cwd, str) and cwd:
         overrides["cwd"] = cwd
