@@ -33,15 +33,18 @@ def copy_effect_manifest(value):
     return result
 
 
-def runtime_effect_manifests(definitions):
-    """Copy descriptors for the frozen model-visible names in the current profile."""
+def runtime_effect_snapshot(definitions):
+    """Capture descriptors and private registrations atomically in the current profile."""
+    from tools.dispatch_binding import capture_dispatch_binding
     from tools.registry import registry
 
     with registry._lock:
         result = []
+        bindings = []
         for definition in definitions:
             name = definition["function"]["name"]
             entry = registry.get_entry(name)
             result.append({"name": name, **copy_effect_manifest(
                 getattr(entry, "effect_manifest", None))})
-        return result
+            bindings.append(capture_dispatch_binding(registry, name))
+        return result, tuple(bindings)

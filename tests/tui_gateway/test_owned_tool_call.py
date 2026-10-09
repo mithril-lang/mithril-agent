@@ -225,6 +225,58 @@ def test_owned_call_executes_once_and_replay_reads_metadata(owned_sessions, name
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("replacement", ["entry", "in-place"])
+def test_owned_equal_descriptor_handler_replacement_retires_approval(owned_sessions, monkeypatch, replacement):
+    import tui_gateway.server as server
+    from tools.registry import registry
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+
+    monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
+    monkeypatch.setattr(registry, "_generation", registry._generation)
+    a, b = owned_sessions["a"], owned_sessions["b"]
+    home = Path(a["profile_home"])
+    with server._session_profile_runtime_scope(a, hydrate_secrets=False):
+        entry = registry.get_entry("write_file")
+        registry.register("write_file", entry.toolset, entry.schema, entry.handler,
+                          scope=str(home), effect_manifest=entry.effect_manifest)
+        original_entry = registry.get_entry("write_file")
+        handler = original_entry.handler
+    original, foreign = session_tool_snapshot(a), session_tool_snapshot(b)
+    calls = []
+
+    def newer(args, **kwargs):
+        calls.append("newer")
+        return handler(args, **kwargs)
+
+    with server._session_profile_runtime_scope(a, hydrate_secrets=False):
+        if replacement == "entry":
+            registry.register("write_file", original_entry.toolset, original_entry.schema, newer,
+                              scope=str(home), effect_manifest=original_entry.effect_manifest)
+        else:
+            original_entry.handler = newer
+    path = home / "changed-handler.txt"
+    arguments = {"path": str(path), "content": "owned effect"}
+    stale = _call(owned_sessions, "a", "a", "write_file", arguments, "stale-handler",
+                  context_id=original["context_id"], revision=original["revision"])
+    assert stale.get("error", {}).get("code") == 4092 and not path.exists() and not calls, stale
+    changed = session_tool_snapshot(a)
+    assert changed["revision"] == original["revision"] and changed["context_id"] != original["context_id"]
+    assert changed["definitions"] == original["definitions"] and changed["effect_manifests"] == original["effect_manifests"]
+    assert session_tool_snapshot(b) == foreign
+    fresh = _call(owned_sessions, "a", "a", "write_file", arguments, "fresh-handler")["result"]
+    assert fresh["state"] == "returned" and path.read_text() == "owned effect" and calls == ["newer"]
+    with server._session_profile_runtime_scope(a, hydrate_secrets=False):
+        registry.get_entry("write_file").handler = handler
+    restored = session_tool_snapshot(a)
+    assert restored["revision"] == original["revision"] and restored["context_id"] != original["context_id"]
+    path.unlink()
+    refused = _call(owned_sessions, "a", "a", "write_file", arguments, "restored-old-handler",
+                    context_id=original["context_id"], revision=original["revision"])
+    assert refused.get("error", {}).get("code") == 4092 and not path.exists()
+    assert session_tool_snapshot(b) == foreign
+
+
+@pytest.mark.platforms("posix")
 def test_owned_effect_manifest_retires_profile_context_without_changing_prompt(owned_sessions, monkeypatch):
     import tui_gateway.server as server
     from tools.registry import registry

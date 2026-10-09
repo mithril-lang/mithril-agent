@@ -34,6 +34,13 @@ class DispatchBinding:
     is_async: bool
     schema_digest: str | None
 
+    def same_capture(self, other):
+        """Compare immutable captures, never a plugin callable's custom equality."""
+        return (self.registry is other.registry and self.name == other.name
+                and self.home == other.home and self.entry is other.entry
+                and self.handler is other.handler and self.is_async == other.is_async
+                and self.schema_digest == other.schema_digest)
+
     def matches(self, entry):
         return (entry is self.entry and (entry is None or
                 (entry.handler is self.handler and entry.is_async == self.is_async

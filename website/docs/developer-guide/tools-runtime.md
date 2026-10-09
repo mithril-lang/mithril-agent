@@ -465,9 +465,16 @@ Existing Web/Desktop owned adapters compare this same opaque context/revision.
 This is the shared metadata/invalidation foundation, not a full-operation manifest
 or resolved target grant. Per-operation declarations, actual target resolution,
 host approval display and grants, shared budgets, async completion and real
-provider/native qualification remain required. Equal-descriptor handler
-replacement before admission still needs a separate runtime generation audit;
-the existing registered-handler fence pins a callable during an admitted call.
+provider/native qualification remain required.
+
+The snapshot also captures registrations under the same profile/registry lock as
+the descriptors. Private entry, handler, async flag and schema/manifest captures
+retire context when observed to change, even if the public descriptors/revision
+are identical. Restoring a previous callable never revives an observed old
+context. Function pointers, registration objects and profile paths are not added
+to the wire. The existing registered-handler fence still pins the callable during
+an admitted call. This covers registered execution targets; inline store/callback
+and provider configuration generations require their own admission audit.
 
 ### Cross-language owned SDK qualification
 

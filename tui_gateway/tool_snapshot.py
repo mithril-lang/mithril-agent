@@ -83,24 +83,29 @@ def session_tool_snapshot(session: dict | None) -> dict:
                 or not isinstance(function.get("parameters"), dict)):
             raise ValueError("invalid agent tool definition")
         names.add(name)
-    from tools.effect_manifest import runtime_effect_manifests
+    from tools.effect_manifest import runtime_effect_snapshot
     from tui_gateway.server import _session_profile_runtime_scope
 
     try:
         with _session_profile_runtime_scope(session, hydrate_secrets=False):
-            manifests = runtime_effect_manifests(definitions)
+            manifests, bindings = runtime_effect_snapshot(definitions)
         manifest_encoded = json.dumps(manifests, ensure_ascii=False, sort_keys=True,
                                       separators=(",", ":"), allow_nan=False).encode("utf-8")
         manifest_identity = hashlib.sha256(manifest_encoded).hexdigest()
     except Exception:
         with _agent_tools_lock:
             session["_tool_snapshot_effect_identity"] = None
+            session["_tool_snapshot_registration_bindings"] = None
             session["_tool_snapshot_context"] = uuid.uuid4().hex
         raise ValueError("owned effect manifest is unavailable") from None
     with _agent_tools_lock:
-        if session.get("_tool_snapshot_effect_identity") != manifest_identity:
+        previous = session.get("_tool_snapshot_registration_bindings")
+        registrations_equal = (previous is not None and len(previous) == len(bindings)
+                               and all(old.same_capture(new) for old, new in zip(previous, bindings)))
+        if session.get("_tool_snapshot_effect_identity") != manifest_identity or not registrations_equal:
             session["_tool_snapshot_effect_identity"] = manifest_identity
             session["_tool_snapshot_context"] = uuid.uuid4().hex
+        session["_tool_snapshot_registration_bindings"] = bindings
         context = session["_tool_snapshot_context"]
     encoded = json.dumps({"definitions": definitions, "effect_manifests": manifests},
                          ensure_ascii=False, sort_keys=True,
