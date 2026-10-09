@@ -11,6 +11,14 @@ import pytest
 
 
 def _qualification_groups(config):
+    if config.get("inlineTools"):
+        families = ["todo", "memory", "memory-user", "recall", "recall-discover", "inline-deny"]
+        groups = [("test/browser-owned-network.test.ts", ": " + family + "$", "browser-" + family + "-owned-network")
+                  for family in families]
+        if config["desktopChatSource"]:
+            groups = [("test/desktop-owned-network.test.ts", ": " + family + "$", "desktop-" + family + "-owned-network")
+                      for family in families] + groups
+        return groups
     groups = [("test/browser-owned-network.test.ts", ": " + family + "$", "browser-" + family + "-owned-network")
               for family in ["core", "patch", "patch-deny"]]
     if config["desktopMainModule"]:
@@ -25,12 +33,12 @@ def _qualification_groups(config):
     return groups
 
 
-@pytest.mark.parametrize("native,desktop", [(False, False), (True, False), (True, True)])
-def test_qualification_functions_keep_independent_deadlines(tmp_path, native, desktop):
+@pytest.mark.parametrize("native,desktop,inline", [(False, False, False), (True, False, False), (True, True, False), (True, True, True)])
+def test_qualification_functions_keep_independent_deadlines(tmp_path, native, desktop, inline):
     import subprocess
     import sys
 
-    config = {"desktopMainModule": native, "desktopChatSource": desktop}
+    config = {"desktopMainModule": native, "desktopChatSource": desktop, "inlineTools": inline}
     completed = []
     for file, title, label in _qualification_groups(config):
         # Real children model distinct bounded functions: coalescing two
@@ -51,10 +59,12 @@ def test_qualification_functions_keep_independent_deadlines(tmp_path, native, de
             if child.poll() is None:
                 child.kill()
             child.communicate(timeout=5)
-    for family in ["core", "patch", "patch-deny"]:
+    browser_families = ["todo", "memory", "memory-user", "recall", "recall-discover", "inline-deny"] if inline else ["core", "patch", "patch-deny"]
+    desktop_families = browser_families if inline else ["read", "write", "deny", "alias", "patch", "patch-deny"]
+    for family in browser_families:
         assert sum(label == "browser-" + family + "-owned-network" for label, _ in completed) == 1
-    assert sum(label == "native-main-owned-network" for label, _ in completed) == int(native)
-    for family in ["read", "write", "deny", "alias", "patch", "patch-deny"]:
+    assert sum(label == "native-main-owned-network" for label, _ in completed) == int(native and not inline)
+    for family in desktop_families:
         assert sum(label == "desktop-" + family + "-owned-network" for label, _ in completed) == int(desktop)
 
 
@@ -169,6 +179,7 @@ def owned_sessions(tmp_path, monkeypatch, request):
         "test_owned_memory_preserves_profile_prompt_and_replay",
         "test_owned_session_search_uses_attached_durable_store",
         "test_owned_inline_store_replacement_retires_approval",
+        "test_real_browser_api_owned_hermes_network",
     }
     if inline_state:
         import tools.memory_tool  # noqa: F401
@@ -177,7 +188,7 @@ def owned_sessions(tmp_path, monkeypatch, request):
     if request.node.name == "test_owned_runtime_generation_shared_by_file_terminal_and_remote_code_resolver":
         names.append("terminal")
     definitions = [{"type": "function", "function": copy.deepcopy(registry.get_entry(name).schema)} for name in names]
-    collision_fixture = request.node.name == "test_real_browser_api_owned_hermes_network"
+    collision_fixture = getattr(request.node, "originalname", None) == "test_real_browser_api_owned_hermes_network"
     if collision_fixture:
         monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
         monkeypatch.setattr(registry, "_generation", registry._generation)
@@ -220,7 +231,13 @@ def owned_sessions(tmp_path, monkeypatch, request):
     for session in sessions.values():
         with server._session_profile_runtime_scope(session, hydrate_secrets=False):
             shutdown_kernels_for_owner("tool-only:same-durable-owner")
-        session["agent"]._session_db.close()
+            agent = session["agent"]
+            db = agent._session_db
+            # The real close finalizes its row. Retire it before closing the
+            # borrowed fixture DB, then detach it so GC cannot reopen the handle.
+            agent.close()
+            agent._session_db = None
+        db.close()
 
 
 def _call(sessions, caller, target, name, args, request, **changes):
@@ -1828,7 +1845,8 @@ def test_mounted_web_desktop_cards_real_approval_queue(owned_sessions, monkeypat
 
 
 @pytest.mark.platforms("posix")
-def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, request, tmp_path):
+@pytest.mark.parametrize("family", ["file", "inline"])
+def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, request, tmp_path, family):
     """Real WASM parents, consent UI, Hono/D1, ticket WS and actual owned handlers.
 
     Fixture issuer/profile mapping, provider construction, two scoped collision
@@ -1853,6 +1871,12 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
     # metadata. Background persistence may stamp an unflushed seed while the
     # longer browser qualification runs; it must not change the conversation.
     original_histories = {}
+    for owner, session in owned_sessions.items():
+        db = session["agent"]._session_db
+        db.create_session(session_id="same-inline-archive", source="cli", model="fixture")
+        db.append_message("same-inline-archive", "user", f"inline archive owned only by {owner}")
+        db.create_session(session_id="excluded-inline-archive", source="cli", model="fixture")
+        db.append_message("excluded-inline-archive", "user", f"inline archive excluded only by {owner}")
     for owner, session in owned_sessions.items():
         with session["history_lock"]:
             agent = session["agent"]
@@ -1884,6 +1908,27 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
             raise HTTPException(status_code=401)
         return {"ticket": mint_ticket(user_id="fixture-owner", provider="stub")}
 
+    @app.get("/qualification/inline-state")
+    async def inline_state(x_fixture_issuer: str = Header(default="")):
+        if not secrets.compare_digest(x_fixture_issuer, issuer):
+            raise HTTPException(status_code=401)
+        states = {}
+        for owner, session in owned_sessions.items():
+            agent = session["agent"]
+            memory = Path(session["profile_home"]) / "memories" / "MEMORY.md"
+            user = memory.with_name("USER.md")
+            states[owner] = {
+                "todos": agent._todo_store.read(),
+                "todoRevision": agent._todo_store.snapshot()["revision"],
+                "memory": memory.read_text() if memory.exists() else None,
+                "user": user.read_text() if user.exists() else None,
+                "archive": {key: agent._session_db.get_messages(key)
+                            for key in ["same-inline-archive", "excluded-inline-archive"]},
+                "frozen": {key: agent._memory_store.format_for_system_prompt(key) for key in ["memory", "user"]},
+            }
+        assert len(json.dumps(states).encode()) <= 16000
+        return states
+
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
@@ -1900,6 +1945,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                   "ticketUrl": f"http://127.0.0.1:{port}/qualification/ticket", "issuer": issuer,
                   "input": str(home / "ws-owned.txt"), "output": str(home / "ws-browser-output"),
                   "browserExecutable": request.config.getoption("--owned-browser-executable"),
+                  "inlineTools": family == "inline",
                   "desktopMainModule": request.config.getoption("--owned-desktop-main-module"),
                   "desktopChatSource": request.config.getoption("--owned-desktop-chat-source"),
                   "desktopElectronMain": request.config.getoption("--owned-desktop-electron-main"),
@@ -1935,46 +1981,63 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 assert process.returncode == 0, stdout + "\n" + stderr
                 outputs.append(stdout)
             stdout = "\n".join(outputs)
-            for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny",
-                         "js-alias", "python-alias", "js-patch", "python-patch", "js-patch-deny", "python-patch-deny"]:
-                assert f"local owned browser qualified: {mode}" in stdout, stdout
-            if config["desktopMainModule"]:
-                for mode in ["native-read", "native-write", "native-deny"]:
-                    assert f"local owned native qualified: {mode}" in stdout, stdout
-                assert (home / "ws-browser-output-native-write").read_text() == "native-write"
-                assert not (home / "ws-browser-output-native-deny").exists()
-            if config["desktopChatSource"]:
-                for mode in ["js-read", "python-read", "js-write", "python-write",
-                             "js-deny", "python-deny", "js-alias", "python-alias", "js-patch", "python-patch", "js-patch-deny", "python-patch-deny"]:
-                    assert f"local owned desktop browser qualified: {mode}" in stdout, stdout
-                    if config["desktopElectronMain"]:
-                        assert f"local owned electron desktop browser qualified: {mode}" in stdout, stdout
-                for language in ["js", "python"]:
-                    assert (home / f"ws-browser-output-desktop-{language}-write").read_text() == f"desktop-{language}-write"
-                    assert not (home / f"ws-browser-output-desktop-{language}-deny").exists()
-            assert (home / "ws-browser-output-js-write").read_text() == "js-write"
-            assert (home / "ws-browser-output-python-write").read_text() == "python-write"
-            assert not (home / "ws-browser-output-js-deny").exists()
-            assert not (home / "ws-browser-output-python-deny").exists()
-            attempts = owned_sessions["a"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"]
-            expected_attempts = [
-                ("read_file", "returned"), ("read_file", "returned"),
-                ("web_extract", "returned"), ("web_search", "returned"),
-                ("write_file", "returned"), ("write_file", "returned"),
-                ("patch", "returned"), ("patch", "returned")]
-            if config["desktopMainModule"]:
-                expected_attempts += [("read_file", "returned"), ("write_file", "returned")]
-            if config["desktopChatSource"]:
-                expected_attempts += [("read_file", "returned"), ("read_file", "returned"),
-                                      ("web_search", "returned"), ("web_extract", "returned"),
-                                      ("write_file", "returned"), ("write_file", "returned"),
-                                      ("patch", "returned"), ("patch", "returned")]
-            assert sorted((row["tool_name"], row["state"]) for row in attempts) == sorted(expected_attempts)
-            assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
-            print(json.dumps({"qualified": "real-browser-api-hermes", "scenarios": 12,
-                              "native_scenarios": 3 if config["desktopMainModule"] else 0,
-                              "desktop_wasm_scenarios": 12 if config["desktopChatSource"] else 0,
-                              "actual_attempts": len(expected_attempts), "replay_redispatches": 0, "foreign_profile_attempts": 0}))
+            if family == "inline":
+                for surface in ["browser", *(["desktop browser"] if config["desktopChatSource"] else [])]:
+                    for language in ["js", "python"]:
+                        for kind in ["todo", "memory", "memory-user", "recall", "recall-discover", "inline-deny"]:
+                            mode = language + "-" + kind
+                            assert f"local owned {surface} qualified: {mode}" in stdout, stdout
+                            if surface == "desktop browser" and config["desktopElectronMain"]:
+                                assert f"local owned electron desktop browser qualified: {mode}" in stdout, stdout
+                attempts = owned_sessions["a"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"]
+                expected = [(name, "returned") for name in ["todo_list", "memory", "memory", "session_search", "session_search"]
+                            for _ in range(2 * (2 if config["desktopChatSource"] else 1))]
+                assert sorted((row["tool_name"], row["state"]) for row in attempts) == sorted(expected)
+                assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
+                print(json.dumps({"qualified": "real-inline-browser-api-hermes", "scenarios": 12,
+                                  "desktop_wasm_scenarios": 12 if config["desktopChatSource"] else 0,
+                                  "actual_attempts": len(expected), "foreign_profile_attempts": 0}))
+            else:
+                for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny",
+                             "js-alias", "python-alias", "js-patch", "python-patch", "js-patch-deny", "python-patch-deny"]:
+                    assert f"local owned browser qualified: {mode}" in stdout, stdout
+                if config["desktopMainModule"]:
+                    for mode in ["native-read", "native-write", "native-deny"]:
+                        assert f"local owned native qualified: {mode}" in stdout, stdout
+                    assert (home / "ws-browser-output-native-write").read_text() == "native-write"
+                    assert not (home / "ws-browser-output-native-deny").exists()
+                if config["desktopChatSource"]:
+                    for mode in ["js-read", "python-read", "js-write", "python-write",
+                                 "js-deny", "python-deny", "js-alias", "python-alias", "js-patch", "python-patch", "js-patch-deny", "python-patch-deny"]:
+                        assert f"local owned desktop browser qualified: {mode}" in stdout, stdout
+                        if config["desktopElectronMain"]:
+                            assert f"local owned electron desktop browser qualified: {mode}" in stdout, stdout
+                    for language in ["js", "python"]:
+                        assert (home / f"ws-browser-output-desktop-{language}-write").read_text() == f"desktop-{language}-write"
+                        assert not (home / f"ws-browser-output-desktop-{language}-deny").exists()
+                assert (home / "ws-browser-output-js-write").read_text() == "js-write"
+                assert (home / "ws-browser-output-python-write").read_text() == "python-write"
+                assert not (home / "ws-browser-output-js-deny").exists()
+                assert not (home / "ws-browser-output-python-deny").exists()
+                attempts = owned_sessions["a"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"]
+                expected_attempts = [
+                    ("read_file", "returned"), ("read_file", "returned"),
+                    ("web_extract", "returned"), ("web_search", "returned"),
+                    ("write_file", "returned"), ("write_file", "returned"),
+                    ("patch", "returned"), ("patch", "returned")]
+                if config["desktopMainModule"]:
+                    expected_attempts += [("read_file", "returned"), ("write_file", "returned")]
+                if config["desktopChatSource"]:
+                    expected_attempts += [("read_file", "returned"), ("read_file", "returned"),
+                                          ("web_search", "returned"), ("web_extract", "returned"),
+                                          ("write_file", "returned"), ("write_file", "returned"),
+                                          ("patch", "returned"), ("patch", "returned")]
+                assert sorted((row["tool_name"], row["state"]) for row in attempts) == sorted(expected_attempts)
+                assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
+                print(json.dumps({"qualified": "real-browser-api-hermes", "scenarios": 12,
+                                  "native_scenarios": 3 if config["desktopMainModule"] else 0,
+                                  "desktop_wasm_scenarios": 12 if config["desktopChatSource"] else 0,
+                                  "actual_attempts": len(expected_attempts), "replay_redispatches": 0, "foreign_profile_attempts": 0}))
             for owner in ["a", "b"]:
                 assert owned_sessions[owner]["agent"]._session_messages == original_histories[owner]
         finally:
