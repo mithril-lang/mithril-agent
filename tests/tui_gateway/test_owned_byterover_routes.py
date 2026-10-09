@@ -111,21 +111,66 @@ def test_owned_byterover_destination_cannot_redirect(cli_fixture, owned_sessions
             assert (row["agent"].tools, row["history"]) == frozen[key]
 
 
-def test_byterover_identity_is_read_only_and_does_not_encode_data_or_secrets(monkeypatch):
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("owned_sessions", [opened_provider], indirect=True)
+@pytest.mark.parametrize("path,name,args", [
+    ("foreground", "brv_curate", {"content": "captured route fact"}),
+    ("foreground", "brv_query", {"query": "captured route fact"}),
+    ("foreground", "brv_status", {}),
+    ("background", "brv_curate", {"content": "captured route fact"}),
+])
+def test_byterover_execution_keeps_selected_route_after_capture(cli_fixture, owned_sessions, monkeypatch, path, name, args):
+    import threading
     import plugins.memory.byterover as byterover
-    provider = byterover.ByteRoverMemoryProvider({"api_key": "fixture-private-value"})
-    def unavailable(*args, **kwargs):
-        raise AssertionError("Identity must not resolve CLI, create files or launch subprocesses")
-    monkeypatch.setattr(byterover, "_resolve_brv_path", unavailable)
-    monkeypatch.setattr(byterover, "_run_brv", unavailable)
-    monkeypatch.setattr(Path, "mkdir", unavailable)
-    original = provider.identity_signature()
-    assert provider.identity_signature() == original
-    assert "fixture-private-value" not in json.dumps(original)
-    provider._turn_count += 1
-    assert provider.identity_signature() == original
-    provider._cwd = "/selected/fixture"
-    selected = provider.identity_signature()
-    assert selected != original
-    provider._cwd = "/foreign/fixture"
-    assert provider.identity_signature() != selected
+    import tui_gateway.server as server
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+
+    providers = {key: row["agent"]._memory_manager.providers[0] for key, row in owned_sessions.items()}
+    roots = {key: Path(provider._cwd) for key, provider in providers.items()}
+    frozen = {key: copy.deepcopy((row["agent"].tools, row["history"])) for key, row in owned_sessions.items()}
+    for visit, owner in enumerate(("a", "b", "a")):
+        foreign = "b" if owner == "a" else "a"
+        provider = providers[owner]
+        before = witness(roots)
+        original = provider._cwd
+        if path == "foreground":
+            entry = byterover._TOOLS[name]
+            def after_capture(selected, value):
+                provider._cwd = str(roots[foreign])
+                return entry[2](selected, value)
+            with monkeypatch.context() as patch:
+                patch.setitem(byterover._TOOLS, name, (*entry[:2], after_capture, entry[3]))
+                result = _call(owned_sessions, owner, owner, name, args, f"brv-captured-{name}-{visit}")["result"]
+            assert result["output"] is None and result["observation"] == "unknown", result
+        else:
+            arrived, release = threading.Event(), threading.Event()
+            spawn = byterover.spawn_context_thread
+            def gated(target, **kwargs):
+                def run():
+                    arrived.set()
+                    assert release.wait(10), "background capture gate was not released"
+                    target()
+                return spawn(run, **kwargs)
+            with monkeypatch.context() as patch:
+                patch.setattr(byterover, "spawn_context_thread", gated)
+                with server._session_profile_runtime_scope(owned_sessions[owner], hydrate_secrets=False):
+                    worker = provider._curate_in_background(args["content"], name="brv-captured", what="fixture")
+                try:
+                    assert arrived.wait(10)
+                    provider._cwd = str(roots[foreign])
+                finally:
+                    release.set()
+                    worker.join(timeout=10)
+                assert not worker.is_alive()
+        provider._cwd = original
+        after = witness(roots)
+        assert after[foreign] == before[foreign]
+        calls = [json.loads(line) for line in after[owner]["calls.jsonl"].splitlines()]
+        assert len(calls) == len(before[owner]["calls.jsonl"].splitlines()) + 1
+        assert calls[-1]["home"] == owned_sessions[owner]["profile_home"]
+        if path == "foreground":
+            replay = _call(owned_sessions, owner, owner, name, args, f"brv-captured-{name}-{visit}")["result"]
+            assert replay["duplicate"] and replay["output"] is None and witness(roots) == after
+            session_tool_snapshot(owned_sessions[owner])
+        for key, row in owned_sessions.items():
+            assert (row["agent"].tools, row["history"]) == frozen[key]
