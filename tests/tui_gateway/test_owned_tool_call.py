@@ -16,13 +16,12 @@ def _qualification_groups(config):
     if config["desktopMainModule"]:
         groups.append(("test/browser-owned-network.test.ts",
                        "^releases exact Desktop native intents", "native-main-owned-network"))
-    if config["desktopChatSource"]:
-        groups.append(("test/desktop-owned-network.test.ts", None, "desktop-owned-network"))
     # Qualify the current isolated Electron boundary before independent Web
     # work can consume its own deadline and prevent reaching this diagnostic.
     # All enabled families and final receipt/history assertions stay required.
     if config["desktopChatSource"]:
-        groups.insert(0, groups.pop())
+        groups = [("test/desktop-owned-network.test.ts", ": " + family + "$", "desktop-" + family + "-owned-network")
+                  for family in ["read", "write", "deny", "alias"]] + groups
     return groups
 
 
@@ -47,12 +46,15 @@ def test_qualification_functions_keep_independent_deadlines(tmp_path, native, de
         try:
             stdout, _ = _communicate_qualification(child, 1.4, tmp_path / (label + ".log"))
             assert child.returncode == 0
-            completed.extend(stdout.splitlines())
+            completed.extend((label, line) for line in stdout.splitlines())
         finally:
             if child.poll() is None:
                 child.kill()
             child.communicate(timeout=5)
-    assert len(completed) == 1 + native + desktop
+    assert sum(label == "browser-owned-network" for label, _ in completed) == 1
+    assert sum(label == "native-main-owned-network" for label, _ in completed) == int(native)
+    for family in ["read", "write", "deny", "alias"]:
+        assert sum(label == "desktop-" + family + "-owned-network" for label, _ in completed) == int(desktop)
 
 
 def _communicate_qualification(process, timeout, evidence_path):

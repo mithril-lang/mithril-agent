@@ -115,3 +115,12 @@ all effect/target declarations, whole boot, public or installed behavior.
 The previous whole nineteen-case run belongs to the earlier runtime; this
 runtime change requires fresh consumer qualification. An earlier related run
 passed twenty-two cases but had an ENOSPC setup error and remains a failed run.
+
+
+### SDK18 captured-deadline consumer qualification
+
+The cross-repository qualifier now selects Desktop read/write/deny/alias as four independent JS/Python pairs. Each existing function180s/process210s bound remains; all enabled families,19 scenario markers,14 returned attempts, other-profile isolation and schema/history assertions are mandatory. A controlled helper test verifies independent bounded waits for every enabled group. Hermes runtime is unchanged by this test/doc change.
+
+With workspace agency.18, Web and Desktop forward the API's existing absolute parent deadline rather than a renewable timeout. The Kuro host separates its30s initialization/execution host-clock budget from child approval wait and keeps all phases inside that captured45s ceiling; these reports are not CPU attestation. The first SDK18 attempt completed six Electron cases and failed at the aggregate180s function bound. After family separation, the canonical run passed Web8/Electron8/native3,14 returned attempts, other-profile0, frozen schema/history unchanged, retry0 (runner211.4s; testcase206.495s). All earlier failures remain evidence.
+
+This is one isolated local qualification using real UI/main/SDK/WASM/registry/local handlers and fixture account/model/issuer/pairing/local D1. It does not establish all operations, real account settings/whole boot/native permissions, continuing stability, published/installed clients or the original authenticated Chat.
