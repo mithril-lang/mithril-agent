@@ -10,6 +10,46 @@ from unittest.mock import patch
 import pytest
 
 
+def _qualification_groups(config):
+    groups = [("test/browser-owned-network.test.ts",
+               "^runs real JS/Python through explicit Web consent", "browser-owned-network")]
+    if config["desktopMainModule"]:
+        groups.append(("test/browser-owned-network.test.ts",
+                       "^releases exact Desktop native intents", "native-main-owned-network"))
+    if config["desktopChatSource"]:
+        groups.append(("test/desktop-owned-network.test.ts", None, "desktop-owned-network"))
+    return groups
+
+
+@pytest.mark.parametrize("native,desktop", [(False, False), (True, False), (True, True)])
+def test_qualification_functions_keep_independent_deadlines(tmp_path, native, desktop):
+    import subprocess
+    import sys
+
+    config = {"desktopMainModule": native, "desktopChatSource": desktop}
+    completed = []
+    for file, title, label in _qualification_groups(config):
+        # Real children model distinct bounded functions: coalescing two
+        # functions spends the second function's budget on the first one.
+        code = (
+            "import sys,time\n"
+            "title=sys.argv[1]\n"
+            f"groups=1 if title or 'desktop' in sys.argv[2] or not {native!r} else 2\n"
+            "for _ in range(groups):\n    time.sleep(0.8)\n    print('completed',flush=True)\n"
+        )
+        child = subprocess.Popen([sys.executable, "-c", code, title or "", file],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, _ = _communicate_qualification(child, 1.4, tmp_path / (label + ".log"))
+            assert child.returncode == 0
+            completed.extend(stdout.splitlines())
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=5)
+    assert len(completed) == 1 + native + desktop
+
+
 def _communicate_qualification(process, timeout, evidence_path):
     import subprocess
 
@@ -1162,18 +1202,19 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
         config_path = tmp_path / "browser-fixture.json"
         config_path.write_text(json.dumps(config))
         config_path.chmod(0o600)
-        qualifier_files = ["test/browser-owned-network.test.ts"]
         if config["desktopChatSource"]:
             assert config["desktopMainModule"], "actual Desktop Chat qualification requires its main module"
-            qualifier_files += ["test/desktop-owned-network.test.ts"]
         process = None
         try:
             outputs = []
-            for qualifier_file in qualifier_files:
+            for qualifier_file, title, label in _qualification_groups(config):
                 # Each invariant family retains its existing bounded wait. New
                 # Desktop coverage must not consume the Web family's deadline.
+                command = [node, str(fund / "node_modules/vitest/vitest.mjs"), "run", "--maxWorkers", "1", qualifier_file]
+                if title:
+                    command += ["-t", title]
                 process = subprocess.Popen(
-                    [node, str(fund / "node_modules/vitest/vitest.mjs"), "run", "--maxWorkers", "1", qualifier_file],
+                    command,
                     cwd=fund / "apps/api", env={**os.environ, "MITHRIL_OWNED_BROWSER_FIXTURE": str(config_path),
                                                  "MITHRIL_OWNED_NATIVE_MAIN_MODULE": config["desktopMainModule"] or "",
                                                  "MITHRIL_OWNED_DESKTOP_CHAT_SOURCE": config["desktopChatSource"] or ""},
@@ -1183,7 +1224,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 if evidence:
                     directory = Path(evidence)
                     assert directory.is_absolute(), "qualification evidence requires an absolute task directory"
-                    evidence_path = directory / (Path(qualifier_file).stem + ".log")
+                    evidence_path = directory / (label + ".log")
                 stdout, stderr = _communicate_qualification(process, 210, evidence_path)
                 assert process.returncode == 0, stdout + "\n" + stderr
                 outputs.append(stdout)
