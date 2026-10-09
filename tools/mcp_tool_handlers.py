@@ -26,6 +26,17 @@ from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
 
+
+class _OwnedAuthorityRetired(RuntimeError):
+    pass
+
+
+def _require_owned_authority():
+    from agent.code_child_dispatch import tool_only_authority_is_current
+
+    if not tool_only_authority_is_current():
+        raise _OwnedAuthorityRetired("The owning tool-only authority changed before MCP dispatch; do not retry.")
+
 declaration.on_change = invalidate_check_fn_cache
 
 _NEEDS_REAUTH_MSG = (
@@ -109,6 +120,10 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     """``(server, None)`` when a call may be dispatched, else ``(None, error)``. No session: a
     reconnect may be completing, so wait briefly before a breaker strike; still down -> ask the
     server task to rebuild (probing a dead transport would re-arm the breaker forever)."""
+    try:
+        _require_owned_authority()
+    except _OwnedAuthorityRetired as exc:
+        return None, tool_error(str(exc))
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
     from tools.mcp_liveness import unavailable_details
@@ -332,6 +347,7 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
         server.mark_tool_call()
 
     def call_once():
+        _require_owned_authority()
         return _loop._run_on_mcp_loop(call, timeout=tool_timeout)
 
     try:
@@ -339,6 +355,8 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
         return _record_call_outcome(server_name, result) if record_outcome else result
     except InterruptedError:
         return tool_error("MCP call interrupted: user sent a new message")
+    except _OwnedAuthorityRetired as exc:
+        return tool_error(str(exc))
     except Exception as exc:
         for recover in recoverers:
             recovered = recover(server_name, exc, call_once, op)
@@ -360,6 +378,7 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
     cancels (caller timeout, user interrupt) propagate unchanged. ``retry_safe=False`` (a write-capable
     ``tools/call``) words the error as outcome-uncertain instead of inviting a replay.
     """
+    _require_owned_authority()
     inflight, task = getattr(server, "_inflight_tasks", None), asyncio.current_task()
     tracked = task is not None and inflight is not None
     if tracked:
@@ -596,6 +615,10 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
     payload, ``required`` validated before any transport work."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
+            try:
+                _require_owned_authority()
+            except _OwnedAuthorityRetired as exc:
+                return tool_error(str(exc))
             from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
             server = _discovery._get_connected_server_for_call(server_name)
             if not server or not server.session:
@@ -605,6 +628,7 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
 
             async def _call():
                 async with server._rpc_lock:
+                    _require_owned_authority()
                     result = await rpc(server.session, args, server_name)
                 return json.dumps(render(result, server_name), ensure_ascii=False)
             return _dispatch(

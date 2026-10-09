@@ -22,6 +22,15 @@ def bind_tool_only_authority(authority):
         _ROOT_AUTHORITY.reset(token)
 
 
+def tool_only_authority_is_current():
+    """Recheck the existing owner fence after nested human/transport waits."""
+    authority = _ROOT_AUTHORITY.get()
+    try:
+        return authority is None or bool(authority())
+    except Exception:
+        return False
+
+
 class _ParentDispatch:
     def __init__(self, agent, parent, *, root_tool=None, authority=None):
         from agent.tool_executor import _tool_search_scoped_names

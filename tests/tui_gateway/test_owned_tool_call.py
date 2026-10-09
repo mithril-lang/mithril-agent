@@ -352,7 +352,8 @@ def test_owned_deferred_resolution_cannot_redirect_execution(owned_sessions, mon
 
 
 @pytest.mark.platforms("posix")
-def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monkeypatch, request):
+@pytest.mark.parametrize("consent", ["read-only", "approve", "retire"])
+def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monkeypatch, request, consent):
     import sys
     import tui_gateway.server as server
     from tools import mcp_tool_discovery as discovery
@@ -365,7 +366,7 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
     monkeypatch.setattr(registry, "_generation", registry._generation)
     fixture = Path(__file__).parents[1] / "e2e/core/mcp_plugins/mcp_fixture_server.py"
     _ensure_mcp_loop()
-    histories, tools, logs, names, writes = {}, {}, {}, {}, {}
+    histories, tools, logs, names, writes, resources = {}, {}, {}, {}, {}, {}
     pids = set()
     try:
         for owner in ["a", "b"]:
@@ -381,6 +382,7 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
                     lambda: discovery._discover_and_register_server("owned-probe", config), timeout=20)
                 names[owner] = next(name for name in registered if name.endswith("ro_probe"))
                 writes[owner] = next(name for name in registered if name.endswith("rw_probe"))
+                resources[owner] = next(name for name in registered if name.endswith("list_resources"))
                 agent = session["agent"]
                 agent.enabled_toolsets = [registry.get_entry(names[owner]).toolset]
                 agent.tools = bridge_tool_schemas(len(registered), ", ".join(registered))
@@ -398,25 +400,62 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
             replay = _call(owned_sessions, owner, owner, "tool_call", args, f"mcp-{index}")
             assert replay["result"]["duplicate"] and replay["result"]["output"] is None, replay
         for owner in ["a", "b"]:
+            listed = _call(owned_sessions, owner, owner, "tool_call",
+                           {"calls": [{"name": resources[owner], "arguments": {}}]}, "mcp-resources")
+            assert listed["result"]["state"] == "returned", json.dumps(listed)
             denied = _call(owned_sessions, owner, owner, "tool_call",
                            {"calls": [{"name": writes[owner], "arguments": {"nonce": "denied"}}]},
                            "mcp-write-denied")
             assert denied["result"]["state"] == "returned-error", json.dumps(denied)
+        approvals = []
+        if consent != "read-only":
+            from tools import approval_prompt
+
+            def answer(command, description, **kwargs):
+                approvals.append(command)
+                if consent == "retire":
+                    owned_sessions["a"]["profile_home"] = owned_sessions["b"]["profile_home"]
+                return "once"
+
+            monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", answer)
+            original_home = owned_sessions["a"]["profile_home"]
+            args = {"calls": [{"name": writes["a"], "arguments": {"nonce": "approved"}}]}
+            try:
+                approved = _call(owned_sessions, "a", "a", "tool_call", args, "mcp-approved")
+            finally:
+                owned_sessions["a"]["profile_home"] = original_home
+            assert len(approvals) == 1 and "rw_probe" in approvals[0], approvals
+            if consent == "approve":
+                assert approved["result"]["state"] == "returned", json.dumps(approved)
+                assert "RW:owned-a:approved" in json.dumps(approved["result"]["output"]), approved
+            else:
+                received = [json.loads(line)["msg"] for line in logs["a"].read_text().splitlines()]
+                assert not any(msg.get("method") == "tools/call" and msg["params"]["name"] == "rw_probe"
+                               for msg in received), received
+                assert approved["result"]["state"] != "returned", json.dumps(approved)
+            replay = _call(owned_sessions, "a", "a", "tool_call", args, "mcp-approved")
+            assert replay["result"]["duplicate"] and replay["result"]["output"] is None, replay
+            assert len(approvals) == 1
+        for owner in ["a", "b"]:
             frames = [json.loads(line) for line in logs[owner].read_text().splitlines()]
             pids.update(frame["pid"] for frame in frames)
             messages = [frame["msg"] for frame in frames]
             assert any(msg.get("method") == "initialize" for msg in messages)
             assert any(msg.get("method") == "tools/list" for msg in messages)
+            assert any(msg.get("method") == "resources/list" for msg in messages)
             calls = [msg["params"] for msg in messages if msg.get("method") == "tools/call"]
-            assert [{"name": call["name"], "arguments": call["arguments"]} for call in calls] == [{"name": "ro_probe", "arguments": {"nonce": nonce}}
-                             for nonce in (["0", "2"] if owner == "a" else ["1"])], calls
+            expected = [{"name": "ro_probe", "arguments": {"nonce": nonce}}
+                        for nonce in (["0", "2"] if owner == "a" else ["1"])]
+            if owner == "a" and consent == "approve":
+                expected.append({"name": "rw_probe", "arguments": {"nonce": "approved"}})
+            assert [{"name": call["name"], "arguments": call["arguments"]} for call in calls] == expected, calls
             assert owned_sessions[owner]["agent"].tools == tools[owner]
             assert owned_sessions[owner]["agent"]._session_messages == histories[owner]
             evidence = request.config.getoption("--owned-qualification-output")
             if evidence:
                 output = Path(evidence)
                 output.mkdir(parents=True, exist_ok=True)
-                (output / f"mcp-{owner}-inbound.jsonl").write_text(logs[owner].read_text())
+                (output / f"mcp-{consent}-{owner}-inbound.jsonl").write_text(logs[owner].read_text())
     finally:
         for session in owned_sessions.values():
             with server._session_profile_runtime_scope(session, hydrate_secrets=False):
