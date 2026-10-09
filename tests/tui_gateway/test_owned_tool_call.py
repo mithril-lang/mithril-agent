@@ -12,7 +12,8 @@ import pytest
 
 def _qualification_groups(config):
     if config.get("inlineTools"):
-        families = ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"]
+        families = (["memory-staged", "memory-user-staged"] if config.get("stagedTools") else
+                    ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"])
         groups = [("test/browser-owned-network.test.ts", ": " + family + "$", "browser-" + family + "-owned-network")
                   for family in families]
         if config["desktopChatSource"]:
@@ -196,7 +197,7 @@ def owned_sessions(tmp_path, monkeypatch, request):
     definitions = [{"type": "function", "function": copy.deepcopy(registry.get_entry(name).schema)} for name in names]
     collision_fixture = getattr(request.node, "originalname", None) == "test_real_browser_api_owned_hermes_network"
     provider_class = getattr(request, "param", None)
-    if collision_fixture and request.node.callspec.params["family"] == "inline":
+    if collision_fixture and request.node.callspec.params["family"] in {"inline", "staged"}:
         from tests.tui_gateway.test_owned_provider_identity import ProviderCanary
         provider_class = ProviderCanary
     if collision_fixture:
@@ -1957,7 +1958,7 @@ def test_mounted_web_desktop_cards_real_approval_queue(owned_sessions, monkeypat
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("family", ["file", "inline"])
+@pytest.mark.parametrize("family", ["file", "inline", "staged"])
 def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, request, tmp_path, family):
     """Real WASM parents, consent UI, Hono/D1, ticket WS and actual owned handlers.
 
@@ -1978,6 +1979,14 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     import tui_gateway.server as server
     from agent.memory_provider import spawn_context_thread
+
+    if family == "staged":
+        from hermes_cli.config import load_config, save_config
+        for session in owned_sessions.values():
+            with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+                config = load_config()
+                config.setdefault("memory", {})["write_approval"] = True
+                save_config(config)
 
     # Freeze the durable history after its real initial flush, including DB
     # metadata. Background persistence may stamp an unflushed seed while the
@@ -2040,6 +2049,10 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                             for key in ["same-inline-archive", "excluded-inline-archive"]},
                 "frozen": {key: agent._memory_store.format_for_system_prompt(key) for key in ["memory", "user"]},
             }
+            if family == "staged":
+                from tools import write_approval as wa
+                with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+                    states[owner]["pending"] = wa.list_pending(wa.MEMORY)
         assert len(json.dumps(states).encode()) <= 16000
         return states
 
@@ -2059,7 +2072,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                   "ticketUrl": f"http://127.0.0.1:{port}/qualification/ticket", "issuer": issuer,
                   "input": str(home / "ws-owned.txt"), "output": str(home / "ws-browser-output"),
                   "browserExecutable": request.config.getoption("--owned-browser-executable"),
-                  "inlineTools": family == "inline",
+                  "inlineTools": family in {"inline", "staged"}, "stagedTools": family == "staged",
                   "desktopMainModule": request.config.getoption("--owned-desktop-main-module"),
                   "desktopChatSource": request.config.getoption("--owned-desktop-chat-source"),
                   "desktopElectronMain": request.config.getoption("--owned-desktop-electron-main"),
@@ -2095,21 +2108,31 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 assert process.returncode == 0, stdout + "\n" + stderr
                 outputs.append(stdout)
             stdout = "\n".join(outputs)
-            if family == "inline":
+            if family in {"inline", "staged"}:
+                kinds = (["memory-staged", "memory-user-staged"] if family == "staged" else
+                         ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"])
                 for surface in ["browser", *(["desktop browser"] if config["desktopChatSource"] else [])]:
                     for language in ["js", "python"]:
-                        for kind in ["todo", "memory", "memory-user", "memory-provider", "memory-provider-deny", "recall", "recall-discover", "inline-deny"]:
+                        for kind in kinds:
                             mode = language + "-" + kind
                             assert f"local owned {surface} qualified: {mode}" in stdout, stdout
                             if surface == "desktop browser" and config["desktopElectronMain"]:
                                 assert f"local owned electron desktop browser qualified: {mode}" in stdout, stdout
                 attempts = owned_sessions["a"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"]
-                expected = [(name, "returned") for name in ["todo_list", "memory", "memory", "qualification_provider_write", "session_search", "session_search"]
+                names = ["memory", "memory"] if family == "staged" else ["todo_list", "memory", "memory", "qualification_provider_write", "session_search", "session_search"]
+                expected = [(name, "returned") for name in names
                             for _ in range(2 * (2 if config["desktopChatSource"] else 1))]
                 assert sorted((row["tool_name"], row["state"]) for row in attempts) == sorted(expected)
                 assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
-                print(json.dumps({"qualified": "real-inline-browser-api-hermes", "scenarios": 16,
-                                  "desktop_wasm_scenarios": 16 if config["desktopChatSource"] else 0,
+                if family == "staged":
+                    from tools import write_approval as wa
+                    with server._session_profile_runtime_scope(owned_sessions["a"], hydrate_secrets=False):
+                        assert len(wa.list_pending(wa.MEMORY)) == len(expected)
+                    with server._session_profile_runtime_scope(owned_sessions["b"], hydrate_secrets=False):
+                        assert wa.list_pending(wa.MEMORY) == []
+                scenarios = 4 if family == "staged" else 16
+                print(json.dumps({"qualified": "real-staged-browser-api-hermes" if family == "staged" else "real-inline-browser-api-hermes", "scenarios": scenarios,
+                                  "desktop_wasm_scenarios": scenarios if config["desktopChatSource"] else 0,
                                   "actual_attempts": len(expected), "foreign_profile_attempts": 0}))
             else:
                 for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny",
