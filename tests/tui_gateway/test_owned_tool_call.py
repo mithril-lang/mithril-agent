@@ -352,7 +352,7 @@ def test_owned_deferred_resolution_cannot_redirect_execution(owned_sessions, mon
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("consent", ["read-only", "approve", "retire"])
+@pytest.mark.parametrize("consent", ["read-only", "approve", "retire", "queue-tool", "queue-resource"])
 def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monkeypatch, request, consent):
     import sys
     import tui_gateway.server as server
@@ -408,7 +408,7 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
                            "mcp-write-denied")
             assert denied["result"]["state"] == "returned-error", json.dumps(denied)
         approvals = []
-        if consent != "read-only":
+        if consent in {"approve", "retire"}:
             from tools import approval_prompt
 
             def answer(command, description, **kwargs):
@@ -436,6 +436,65 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
             replay = _call(owned_sessions, "a", "a", "tool_call", args, "mcp-approved")
             assert replay["result"]["duplicate"] and replay["result"]["output"] is None, replay
             assert len(approvals) == 1
+        if consent.startswith("queue-"):
+            from agent.memory_provider import spawn_context_thread
+
+            session = owned_sessions["a"]
+            original_home = session["profile_home"]
+            with server._session_profile_runtime_scope(session):
+                connected = discovery._get_connected_server_for_call("owned-probe")
+            lock = connected._rpc_lock
+            waiting = threading.Event()
+            result = queue.Queue()
+
+            class ObservedLock:
+                async def __aenter__(self):
+                    assert lock.locked()
+                    waiting.set()
+                    await lock.acquire()
+
+                async def __aexit__(self, *exc):
+                    lock.release()
+
+            async def hold():
+                await lock.acquire()
+
+            async def release():
+                lock.release()
+
+            name = names["a"] if consent == "queue-tool" else resources["a"]
+            arguments = {"nonce": "queued"} if consent == "queue-tool" else {}
+            args = {"calls": [{"name": name, "arguments": arguments}]}
+            before = logs["a"].read_text()
+            _run_on_mcp_loop(hold, timeout=5)
+            connected._rpc_lock = ObservedLock()
+
+            def invoke():
+                try:
+                    result.put(_call(owned_sessions, "a", "a", "tool_call", args, "mcp-queued"))
+                except BaseException as exc:
+                    result.put(exc)
+
+            worker = spawn_context_thread(invoke, name="owned-mcp-queued")
+            worker.start()
+            try:
+                assert waiting.wait(5), "owned call never reached held real RPC lock"
+                session["profile_home"] = owned_sessions["b"]["profile_home"]
+            finally:
+                _run_on_mcp_loop(release, timeout=5)
+                worker.join(15)
+                connected._rpc_lock = lock
+                session["profile_home"] = original_home
+            assert not worker.is_alive()
+            queued = result.get_nowait()
+            assert not isinstance(queued, BaseException), repr(queued)
+            assert queued["result"]["state"] == "returned-error", queued
+            assert logs["a"].read_text() == before, "retired queued RPC crossed actual server wire"
+            replay = _call(owned_sessions, "a", "a", "tool_call", args, "mcp-queued")
+            assert replay["result"]["duplicate"] and replay["result"]["output"] is None, replay
+            assert logs["a"].read_text() == before
+            fresh = _call(owned_sessions, "a", "a", "tool_call", args, "mcp-queued-fresh")
+            assert fresh["result"]["state"] == "returned", fresh
         for owner in ["a", "b"]:
             frames = [json.loads(line) for line in logs[owner].read_text().splitlines()]
             pids.update(frame["pid"] for frame in frames)
@@ -443,11 +502,15 @@ def test_owned_deferred_real_mcp_stdio_profiles_and_replay(owned_sessions, monke
             assert any(msg.get("method") == "initialize" for msg in messages)
             assert any(msg.get("method") == "tools/list" for msg in messages)
             assert any(msg.get("method") == "resources/list" for msg in messages)
+            assert sum(msg.get("method") == "resources/list" for msg in messages) == (
+                2 if owner == "a" and consent == "queue-resource" else 1)
             calls = [msg["params"] for msg in messages if msg.get("method") == "tools/call"]
             expected = [{"name": "ro_probe", "arguments": {"nonce": nonce}}
                         for nonce in (["0", "2"] if owner == "a" else ["1"])]
             if owner == "a" and consent == "approve":
                 expected.append({"name": "rw_probe", "arguments": {"nonce": "approved"}})
+            if owner == "a" and consent == "queue-tool":
+                expected.append({"name": "ro_probe", "arguments": {"nonce": "queued"}})
             assert [{"name": call["name"], "arguments": call["arguments"]} for call in calls] == expected, calls
             assert owned_sessions[owner]["agent"].tools == tools[owner]
             assert owned_sessions[owner]["agent"]._session_messages == histories[owner]
