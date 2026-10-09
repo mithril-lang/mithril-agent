@@ -38,7 +38,8 @@ def session_tool_snapshot(session: dict | None) -> dict:
     if not session or session.get("agent") is None:
         return {"protocol": "hermes-session-tool-snapshot-v1", "status": "not-built",
                 "coverage": "model-visible-only", "context_id": None,
-                "revision": None, "registry_generation": None, "definitions": []}
+                "revision": None, "registry_generation": None, "definitions": [],
+                "effect_manifests": []}
     from tools.mcp_tool_agent import _agent_tools_lock
 
     try:
@@ -82,7 +83,27 @@ def session_tool_snapshot(session: dict | None) -> dict:
                 or not isinstance(function.get("parameters"), dict)):
             raise ValueError("invalid agent tool definition")
         names.add(name)
-    encoded = json.dumps(definitions, ensure_ascii=False, sort_keys=True,
+    from tools.effect_manifest import runtime_effect_manifests
+    from tui_gateway.server import _session_profile_runtime_scope
+
+    try:
+        with _session_profile_runtime_scope(session, hydrate_secrets=False):
+            manifests = runtime_effect_manifests(definitions)
+        manifest_encoded = json.dumps(manifests, ensure_ascii=False, sort_keys=True,
+                                      separators=(",", ":"), allow_nan=False).encode("utf-8")
+        manifest_identity = hashlib.sha256(manifest_encoded).hexdigest()
+    except Exception:
+        with _agent_tools_lock:
+            session["_tool_snapshot_effect_identity"] = None
+            session["_tool_snapshot_context"] = uuid.uuid4().hex
+        raise ValueError("owned effect manifest is unavailable") from None
+    with _agent_tools_lock:
+        if session.get("_tool_snapshot_effect_identity") != manifest_identity:
+            session["_tool_snapshot_effect_identity"] = manifest_identity
+            session["_tool_snapshot_context"] = uuid.uuid4().hex
+        context = session["_tool_snapshot_context"]
+    encoded = json.dumps({"definitions": definitions, "effect_manifests": manifests},
+                         ensure_ascii=False, sort_keys=True,
                          separators=(",", ":"), allow_nan=False).encode("utf-8")
     if len(encoded) > 2 * 1024 * 1024:
         raise ValueError("agent tool snapshot exceeds readback limit")
@@ -90,4 +111,4 @@ def session_tool_snapshot(session: dict | None) -> dict:
             "coverage": "model-visible-only", "context_id": context,
             "revision": hashlib.sha256(encoded).hexdigest(),
             "registry_generation": generation if type(generation) is int else None,
-            "definitions": definitions}
+            "definitions": definitions, "effect_manifests": manifests}

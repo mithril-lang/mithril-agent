@@ -224,6 +224,99 @@ def test_owned_call_executes_once_and_replay_reads_metadata(owned_sessions, name
         assert any(row["attempt_id"] == result["attempt_id"] for row in page["attempts"])
 
 
+@pytest.mark.platforms("posix")
+def test_owned_effect_manifest_retires_profile_context_without_changing_prompt(owned_sessions, monkeypatch):
+    import tui_gateway.server as server
+    from tools.registry import registry
+    from tui_gateway.tool_snapshot import session_tool_snapshot
+
+    monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
+    monkeypatch.setattr(registry, "_generation", registry._generation)
+    a, b = owned_sessions["a"], owned_sessions["b"]
+    original = session_tool_snapshot(a)
+    foreign = session_tool_snapshot(b)
+    declarations = {m["name"]: m for m in original["effect_manifests"]}
+    assert declarations["write_file"]["coverage"] == "partial"
+    assert declarations["read_file"]["coverage"] == "unknown"
+    prompt = copy.deepcopy(a["agent"].tools)
+    home = Path(a["profile_home"])
+    path = home / "manifest-write.txt"
+    with server._session_profile_runtime_scope(a, hydrate_secrets=False):
+        entry = registry.get_entry("write_file")
+        metadata = copy.deepcopy(entry.effect_manifest)
+        metadata["effects"].append("file.metadata")
+        registry.register("write_file", entry.toolset, entry.schema, entry.handler,
+                          check_fn=entry.check_fn, scope=str(home), effect_manifest=metadata)
+        for malformed in ({**metadata, "coverage": "complete"},
+                          {**metadata, "effects": []}, {**metadata, "effects": [float("nan")]}):
+            with pytest.raises(ValueError):
+                registry.register("write_file", entry.toolset, entry.schema, entry.handler,
+                                  scope=str(home), effect_manifest=malformed)
+        metadata["effects"].append("caller-owned-mutation")
+    changed = session_tool_snapshot(a)
+    assert changed["revision"] != original["revision"] and changed["context_id"] != original["context_id"]
+    assert all("caller-owned-mutation" not in m["effects"] for m in changed["effect_manifests"])
+    assert session_tool_snapshot(b) == foreign
+    assert a["agent"].tools == prompt
+    rejected = _call(owned_sessions, "a", "a", "write_file", {"path": str(path), "content": "stale"},
+                     "old-manifest", context_id=original["context_id"], revision=original["revision"])
+    assert rejected["error"]["code"] == 4092 and not path.exists()
+    with server._session_profile_runtime_scope(a, hydrate_secrets=False):
+        entry = registry.get_entry("write_file")
+        entry.effect_manifest = copy.deepcopy(declarations["write_file"])
+        entry.effect_manifest.pop("name")
+    restored = session_tool_snapshot(a)
+    assert restored["revision"] == original["revision"] and restored["context_id"] != original["context_id"]
+    result = _call(owned_sessions, "a", "a", "write_file", {"path": str(path), "content": "fresh"},
+                   "fresh-manifest")["result"]
+    assert result["state"] == "returned" and path.read_text() == "fresh"
+    assert session_tool_snapshot(b) == foreign and a["agent"].tools == prompt
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("timing", ["policy", "handler-selection"])
+def test_owned_effect_manifest_changes_during_policy_never_dispatch(owned_sessions, monkeypatch, timing):
+    from tools.registry import registry
+
+    monkeypatch.setattr(registry, "_scoped_tools", copy.deepcopy(registry._scoped_tools))
+    monkeypatch.setattr(registry, "_generation", registry._generation)
+    agent = owned_sessions["a"]["agent"]
+    before = agent._tool_guardrails.before_call
+
+    def change(name, args):
+        decision = before(name, args)
+        if timing == "policy":
+            registry.get_entry(name).effect_manifest["effects"].append("file.metadata")
+        return decision
+
+    # Keep the mutation on a profile overlay, never the shared built-in entry.
+    import tui_gateway.server as server
+    session = owned_sessions["a"]
+    with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+        entry = registry.get_entry("write_file")
+        registry.register("write_file", entry.toolset, entry.schema, entry.handler,
+                          scope=session["profile_home"], effect_manifest=entry.effect_manifest)
+    monkeypatch.setattr(agent._tool_guardrails, "before_call", change)
+    invoke = agent._invoke_tool
+
+    def change_at_selection(name, *args, **kwargs):
+        if timing == "handler-selection":
+            registry.get_entry(name).effect_manifest["effects"].append("file.metadata")
+        return invoke(name, *args, **kwargs)
+
+    monkeypatch.setattr(agent, "_invoke_tool", change_at_selection)
+    path = Path(session["profile_home"]) / "mid-policy.txt"
+    result = _call(owned_sessions, "a", "a", "write_file", {"path": str(path), "content": "refused"},
+                   "mid-manifest")["result"]
+    row = agent._session_db.get_tool_attempt(agent.session_id, result["attempt_id"])
+    expected = "rejected" if timing == "policy" else "returned-error"
+    assert row["state"] == expected and not path.exists(), result
+    assert (row["dispatched_at"] is None) == (timing == "policy")
+    replay = _call(owned_sessions, "a", "a", "write_file", {"path": str(path), "content": "refused"},
+                   "mid-manifest")["result"]
+    assert replay["duplicate"] and replay["observation"] == "metadata-only" and not path.exists()
+
+
 @pytest.mark.parametrize("failure", ["busy", "lease", "retired", "schema", "lost-result", "child-retired", "stale-context", "interrupted", "guardrail", "nonfinite", "deadline"])
 def test_owned_call_rejects_lost_authority_and_preserves_unknown(owned_sessions, monkeypatch, failure):
     import tui_gateway.server as server

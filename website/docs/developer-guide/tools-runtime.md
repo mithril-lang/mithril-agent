@@ -438,6 +438,37 @@ target grants, distributed parent budgets/ledger or result/artifact recovery.
 Dynamic bridge/plugin internals and each provider/write/scheduler/delegation/MOA
 operation still need their own effect admission and live qualification evidence.
 
+### Effect manifest readback and invalidation
+
+`registry.register(effect_manifest=...)` accepts bounded, finite, host-authored
+partial declarations alongside the schema and handler. The descriptor contains
+`coverage: "partial"`, effect names and target descriptors (`kind`, an argument
+JSON pointer, and a resolution label). Registration copies the value, rejects
+malformed declarations and cannot claim complete coverage. `write_file` declares
+its known file-write/path effect against the selected terminal runtime; backend
+setup, backups and other possible effects are not exhaustively qualified by that
+partial declaration.
+
+`tools.show.runtime_snapshot.effect_manifests` covers exactly the frozen
+model-visible names in the attached profile. Tools without explicit metadata,
+including annotation-only MCP tools and inline tools, report `coverage: "unknown"`.
+Declarations are not inferred from names or schema annotations. Discovery does
+not grant permission, resolve a target, or prove provider readiness.
+
+The server-local revision covers both frozen schemas and these descriptors.
+Observed declaration changes retire the opaque context, including A→B→A;
+malformed metadata retires it before refusing readback. The registered-child
+handler binding also fingerprints the declaration, catching a change between
+policy and registry handler selection. Model prompt schemas/history stay frozen.
+Existing Web/Desktop owned adapters compare this same opaque context/revision.
+
+This is the shared metadata/invalidation foundation, not a full-operation manifest
+or resolved target grant. Per-operation declarations, actual target resolution,
+host approval display and grants, shared budgets, async completion and real
+provider/native qualification remain required. Equal-descriptor handler
+replacement before admission still needs a separate runtime generation audit;
+the existing registered-handler fence pins a callable during an admitted call.
+
 ### Cross-language owned SDK qualification
 
 The opt-in `tests/tui_gateway/test_owned_tool_call.py` cross-repository qualifier

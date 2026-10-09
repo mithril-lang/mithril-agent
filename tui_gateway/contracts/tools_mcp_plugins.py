@@ -71,6 +71,7 @@ class SessionToolSnapshot(Result):
     revision: str | None
     registry_generation: int | None
     definitions: list[dict[str, JsonValue]]
+    effect_manifests: list[dict[str, JsonValue]] = []
 
 
 class ToolsShowResult(Result):

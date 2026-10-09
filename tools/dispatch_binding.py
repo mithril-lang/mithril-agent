@@ -14,7 +14,10 @@ _CURRENT = ContextVar("tool_dispatch_registration", default=None)
 def _schema_digest(entry):
     if entry is None:
         return None
-    encoded = json.dumps(entry.schema, sort_keys=True, separators=(",", ":"),
+    from tools.effect_manifest import copy_effect_manifest
+    encoded = json.dumps({"schema": entry.schema,
+                          "effects": copy_effect_manifest(entry.effect_manifest)},
+                         sort_keys=True, separators=(",", ":"),
                          ensure_ascii=False, allow_nan=False).encode("utf-8")
     if len(encoded) > 2 * 1024 * 1024:
         raise ValueError("Registration schema exceeds dispatch limit")

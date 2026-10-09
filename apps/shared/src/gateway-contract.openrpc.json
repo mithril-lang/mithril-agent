@@ -31607,6 +31607,15 @@
             },
             "title": "Definitions",
             "type": "array"
+          },
+          "effect_manifests": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Effect Manifests",
+            "type": "array"
           }
         },
         "required": [

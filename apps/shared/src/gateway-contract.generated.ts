@@ -3880,6 +3880,7 @@ export interface SessionToolSnapshot {
   revision: string | null
   registry_generation: number | null
   definitions: Record<string, unknown>[]
+  effect_manifests?: Record<string, unknown>[]
 }
 /** ``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's profile is authoritative and its agent is rebuilt. */
 export interface ToolsConfigureParams {
