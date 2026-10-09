@@ -124,3 +124,12 @@ The cross-repository qualifier now selects Desktop read/write/deny/alias as four
 With workspace agency.18, Web and Desktop forward the API's existing absolute parent deadline rather than a renewable timeout. The Kuro host separates its30s initialization/execution host-clock budget from child approval wait and keeps all phases inside that captured45s ceiling; these reports are not CPU attestation. The first SDK18 attempt completed six Electron cases and failed at the aggregate180s function bound. After family separation, the canonical run passed Web8/Electron8/native3,14 returned attempts, other-profile0, frozen schema/history unchanged, retry0 (runner211.4s; testcase206.495s). All earlier failures remain evidence.
 
 This is one isolated local qualification using real UI/main/SDK/WASM/registry/local handlers and fixture account/model/issuer/pairing/local D1. It does not establish all operations, real account settings/whole boot/native permissions, continuing stability, published/installed clients or the original authenticated Chat.
+
+
+### Actual consumer multi-target patch allow and deny
+
+The real network fixture includes the existing patch schema before constructing each profile's frozen agent definition. It now requires Web12/Electron12/native3 markers, including JS/Python combined V4A Add/Update/Delete/Move and denial on both surfaces. Every human card displays all five content/entry targets; pending/denied files remain unchanged, allowed actual-handler effects match five expected dispositions, Web metadata-only replay has no new wire/effect, and Desktop retired releases remain refused. Final owned durable DB contains18 returned attempts and no other-profile attempts; schema/history remain frozen.
+
+Canonical SDK18 run passes27 scenarios, runner454.2s/testcase449.091s, retry/failure/error/skip0. Web core/patch/patch-deny and Desktop read/write/deny/alias/patch/patch-deny each retain their independent180s function/210s process bounds; native main retains90s. The three configuration helper cases pass. This test/doc increment does not change Hermes runtime or published availability.
+
+Actual UI/main/SDK/WASM/registry/local patch effects use temporary files; account/model/issuer/pairing/local D1 and Web parent creation are fixtures. Remote/atomic patch, patch cancellation/result-loss recovery, real account settings/native permissions, all operations/providers, ongoing stability, publication/installed/original Chat remain separate gates.

@@ -11,8 +11,8 @@ import pytest
 
 
 def _qualification_groups(config):
-    groups = [("test/browser-owned-network.test.ts",
-               "^runs real JS/Python through explicit Web consent", "browser-owned-network")]
+    groups = [("test/browser-owned-network.test.ts", ": " + family + "$", "browser-" + family + "-owned-network")
+              for family in ["core", "patch", "patch-deny"]]
     if config["desktopMainModule"]:
         groups.append(("test/browser-owned-network.test.ts",
                        "^releases exact Desktop native intents", "native-main-owned-network"))
@@ -21,7 +21,7 @@ def _qualification_groups(config):
     # All enabled families and final receipt/history assertions stay required.
     if config["desktopChatSource"]:
         groups = [("test/desktop-owned-network.test.ts", ": " + family + "$", "desktop-" + family + "-owned-network")
-                  for family in ["read", "write", "deny", "alias"]] + groups
+                  for family in ["read", "write", "deny", "alias", "patch", "patch-deny"]] + groups
     return groups
 
 
@@ -51,9 +51,10 @@ def test_qualification_functions_keep_independent_deadlines(tmp_path, native, de
             if child.poll() is None:
                 child.kill()
             child.communicate(timeout=5)
-    assert sum(label == "browser-owned-network" for label, _ in completed) == 1
+    for family in ["core", "patch", "patch-deny"]:
+        assert sum(label == "browser-" + family + "-owned-network" for label, _ in completed) == 1
     assert sum(label == "native-main-owned-network" for label, _ in completed) == int(native)
-    for family in ["read", "write", "deny", "alias"]:
+    for family in ["read", "write", "deny", "alias", "patch", "patch-deny"]:
         assert sum(label == "desktop-" + family + "-owned-network" for label, _ in completed) == int(desktop)
 
 
@@ -161,6 +162,7 @@ def owned_sessions(tmp_path, monkeypatch, request):
         names.append("search_files")
     if getattr(request.node, "originalname", None) in {
         "test_owned_patch_targets_preserve_content_and_entries", "test_compiled_owned_sdk_real_stdio_roundtrip",
+        "test_real_browser_api_owned_hermes_network",
     }:
         names.append("patch")
     inline_state = getattr(request.node, "originalname", None) in {
@@ -1934,7 +1936,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 outputs.append(stdout)
             stdout = "\n".join(outputs)
             for mode in ["js-read", "python-read", "js-write", "python-write", "js-deny", "python-deny",
-                         "js-alias", "python-alias"]:
+                         "js-alias", "python-alias", "js-patch", "python-patch", "js-patch-deny", "python-patch-deny"]:
                 assert f"local owned browser qualified: {mode}" in stdout, stdout
             if config["desktopMainModule"]:
                 for mode in ["native-read", "native-write", "native-deny"]:
@@ -1943,7 +1945,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                 assert not (home / "ws-browser-output-native-deny").exists()
             if config["desktopChatSource"]:
                 for mode in ["js-read", "python-read", "js-write", "python-write",
-                             "js-deny", "python-deny", "js-alias", "python-alias"]:
+                             "js-deny", "python-deny", "js-alias", "python-alias", "js-patch", "python-patch", "js-patch-deny", "python-patch-deny"]:
                     assert f"local owned desktop browser qualified: {mode}" in stdout, stdout
                     if config["desktopElectronMain"]:
                         assert f"local owned electron desktop browser qualified: {mode}" in stdout, stdout
@@ -1958,18 +1960,20 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
             expected_attempts = [
                 ("read_file", "returned"), ("read_file", "returned"),
                 ("web_extract", "returned"), ("web_search", "returned"),
-                ("write_file", "returned"), ("write_file", "returned")]
+                ("write_file", "returned"), ("write_file", "returned"),
+                ("patch", "returned"), ("patch", "returned")]
             if config["desktopMainModule"]:
                 expected_attempts += [("read_file", "returned"), ("write_file", "returned")]
             if config["desktopChatSource"]:
                 expected_attempts += [("read_file", "returned"), ("read_file", "returned"),
                                       ("web_search", "returned"), ("web_extract", "returned"),
-                                      ("write_file", "returned"), ("write_file", "returned")]
+                                      ("write_file", "returned"), ("write_file", "returned"),
+                                      ("patch", "returned"), ("patch", "returned")]
             assert sorted((row["tool_name"], row["state"]) for row in attempts) == sorted(expected_attempts)
             assert owned_sessions["b"]["agent"]._session_db.list_tool_attempts("same-durable-owner")["attempts"] == []
-            print(json.dumps({"qualified": "real-browser-api-hermes", "scenarios": 8,
+            print(json.dumps({"qualified": "real-browser-api-hermes", "scenarios": 12,
                               "native_scenarios": 3 if config["desktopMainModule"] else 0,
-                              "desktop_wasm_scenarios": 8 if config["desktopChatSource"] else 0,
+                              "desktop_wasm_scenarios": 12 if config["desktopChatSource"] else 0,
                               "actual_attempts": len(expected_attempts), "replay_redispatches": 0, "foreign_profile_attempts": 0}))
             for owner in ["a", "b"]:
                 assert owned_sessions[owner]["agent"]._session_messages == original_histories[owner]
