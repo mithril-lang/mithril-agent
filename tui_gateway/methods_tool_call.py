@@ -80,7 +80,7 @@ def _tool_only_run(rid, params, session, agent, db):
             return _err(rid, 4092, "session schema context or authority changed")
         # The private tool-only task must use this conversation's selected
         # workspace and backend overrides, not a gateway process fallback cwd.
-        prepare_owned_tool_task(session, agent)
+        prepare_owned_tool_task(session, agent, name)
         target_ready = params.get("target_digest") is not None
         if not authority():
             return _err(rid, 4092, "session workspace changed before tool dispatch")

@@ -28,7 +28,7 @@ def _(rid, params):
                     snapshot = session_tool_snapshot(session)
                     if (snapshot["context_id"], snapshot["revision"]) != (params["context_id"], params["revision"]):
                         return _err(rid, 4092, "target preview context changed")
-                    task = prepare_owned_tool_task(session, agent)
+                    task = prepare_owned_tool_task(session, agent, params["name"])
                     binding = owned_target_binding(session, snapshot, params["name"], params["arguments"], task)
                     latest = session_tool_snapshot(session)
                     if (_current_session_steer_authority(sid)[1] is not session

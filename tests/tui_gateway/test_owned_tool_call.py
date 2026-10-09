@@ -181,6 +181,8 @@ def owned_sessions(tmp_path, monkeypatch, request):
         "test_owned_inline_store_replacement_retires_approval",
         "test_owned_memory_mirror_route_change_retires_consent",
         "test_owned_memory_metadata_cannot_redirect_mirror_after_builtin_write",
+        "test_owned_memory_target_preserves_store_mirrors_and_replay",
+        "test_owned_memory_reviewed_routes_cannot_be_substituted",
         "test_real_browser_api_owned_hermes_network",
     }
     if inline_state:
@@ -2381,7 +2383,10 @@ def test_owned_memory_preserves_profile_prompt_and_replay(owned_sessions, target
         target_file = home / "memories" / filename
         target_before = target_file.read_bytes() if target_file.exists() else None
         preview = _target_preview(owned_sessions, owner, owner, "memory", {"target": target, "action": "add", "content": "unapproved"})
-        assert preview["result"]["target_binding"] is None
+        destination = preview["result"]["target_binding"]["target"]
+        assert destination["namespace"] == "selected-session-memory" and destination["store"] == target
+        assert destination["sessionId"] == "same-durable-owner" and destination["mirrors"] == []
+        assert len(destination["ownerDigest"]) == len(destination["storeDigest"]) == 64
         refused = _call(owned_sessions, owner, owner, "memory",
                         {"target": target, "action": "add", "content": "unapproved"},
                         f"memory-false-target-{visit}", target_digest="0" * 64)

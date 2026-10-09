@@ -14,7 +14,7 @@ _TARGETS = ContextVar("agent_inline_targets", default=None)
 # Mutable data revisions stay live; these are execution owners, not data snapshots.
 _TARGET_ATTRIBUTES = {
     "todo_list": ("_todo_store",),
-    "memory": ("_memory_store", "_memory_notify", "_memory_write_routes", "_build_memory_write_metadata"),
+    "memory": ("_memory_store", "_memory_store_routes", "_memory_notify", "_memory_write_routes", "_build_memory_write_metadata"),
     "session_search": ("_get_session_db_for_recall",),
     "clarify": ("clarify_callback",),
     "read_terminal": ("read_terminal_callback",),
@@ -31,6 +31,9 @@ _TARGET_ATTRIBUTES = {
 
 
 def _read_target(agent, attribute):
+    if attribute == "_memory_store_routes":
+        from tools.memory_owned_target import memory_store_routes
+        return memory_store_routes(getattr(agent, "_memory_store", None))
     if attribute == "_memory_notify":
         manager = getattr(agent, "_memory_manager", None)
         return manager.notify_memory_tool_write if manager else None
@@ -61,7 +64,7 @@ def inline_target(agent, attribute):
 
 def select_inline_targets(agent, name, executor):
     targets = {attr: _read_target(agent, attr) for attr in _TARGET_ATTRIBUTES.get(name, ())}
-    identities = tuple((attr, value if attr == "_memory_write_routes" else
+    identities = tuple((attr, value if attr in {"_memory_write_routes", "_memory_store_routes"} else
                         callable_identity(value) if callable(value) else id(value))
                        for attr, value in targets.items())
 

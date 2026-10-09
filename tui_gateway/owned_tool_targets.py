@@ -5,13 +5,17 @@ import json
 from agent.code_child_attempts import _digest
 
 
-def prepare_owned_tool_task(session, agent):
+def prepare_owned_tool_task(session, agent, name=None):
     from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides
 
     task = f"tool-only:{agent.session_id}"
     overrides = dict(resolve_task_overrides(agent.session_id))
     overrides["_owned_runtime_context"] = session["_tool_snapshot_runtime_context"]
     overrides["_owned_session_id"] = agent.session_id
+    overrides.pop("_owned_memory_targets", None)
+    if name == "memory":
+        from tools.memory_owned_target import capture_memory_targets
+        overrides["_owned_memory_targets"] = capture_memory_targets(agent)
     cwd = session.get("cwd")
     if isinstance(cwd, str) and cwd:
         overrides["cwd"] = cwd

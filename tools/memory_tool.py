@@ -415,6 +415,7 @@ def _build_memory_schema_overrides() -> Dict[str, Any]:
 
 
 from tools.registry import registry, tool_error  # noqa: E402  (registration at import time)
+from tools.memory_owned_target import selected_memory_target  # noqa: E402
 
 registry.register(
     name="memory",
@@ -425,6 +426,7 @@ registry.register(
         **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations")}),
     check_fn=check_memory_requirements,
     emoji="🧠",
+    dispatch_target=selected_memory_target,
     dynamic_schema_overrides=_build_memory_schema_overrides,
     effect_manifest={"coverage": "partial", "effects": ["memory.write", "memory.provider-notification"], "targets": [
         {"kind": "curated-memory-target", "argument": "/target",
