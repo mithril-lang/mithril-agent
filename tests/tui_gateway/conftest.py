@@ -17,6 +17,8 @@ def pytest_addoption(parser):
                      help="Web production DashboardGatewayClient source for local mounted qualification")
     parser.addoption("--approval-ui-desktop-client", default=None,
                      help="Desktop production DashboardGatewayClient source for local mounted qualification")
+    parser.addoption("--approval-ui-sdk-version", default="0.6.25-agency.12",
+                     help="Exact expected SDK package version for mounted qualification; legacy default preserved")
 
     parser.addoption("--owned-browser-fund-root", default=None,
                      help="Fund checkout with built Kuro assets and dependencies for opt-in real Browser/API/Hermes qualification")

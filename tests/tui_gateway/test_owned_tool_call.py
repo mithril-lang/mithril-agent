@@ -768,7 +768,7 @@ def test_mounted_web_desktop_cards_real_approval_queue(owned_sessions, monkeypat
     sdk = Path(module).parent.parent
     dependencies = sdk.parent.parent
     assert (dependencies / "esbuild").is_dir() and (dependencies / "jsdom").is_dir()
-    assert json.loads((sdk / "package.json").read_text())["version"] == "0.6.25-agency.12"
+    assert json.loads((sdk / "package.json").read_text())["version"] == request.config.getoption("--approval-ui-sdk-version")
     home = Path(owned_sessions["a"]["profile_home"])
     monkeypatch.setattr(approval, "_gateway_queues", {})
     monkeypatch.setattr(web.app.state, "auth_required", True, raising=False)
