@@ -10,6 +10,74 @@ from unittest.mock import patch
 import pytest
 
 
+def _communicate_qualification(process, timeout, evidence_path):
+    import subprocess
+
+    stdout, stderr = "", ""
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # Python exposes partial output as bytes even for a text-mode child.
+        stdout = exc.output or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        raise
+    finally:
+        if evidence_path:
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = (stdout + "\n" + stderr).encode()
+            if len(payload) > 1024 * 1024:
+                marker = b"[qualification log truncated at 1 MiB]\n"
+                payload = marker + payload[:1024 * 1024 - len(marker)]
+            evidence_path.write_text(payload.decode("utf-8", errors="ignore"))
+    assert len(stdout.encode()) + len(stderr.encode()) <= 1024 * 1024
+    return stdout, stderr
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "timeout", "oversize"])
+def test_qualification_evidence_survives_process_outcome(tmp_path, outcome):
+    import subprocess
+    import sys
+
+    # Real child output and a witness distinguish execution from a launch failure.
+    witness = tmp_path / "started"
+    evidence = tmp_path / "evidence" / "child.log"
+    code = (
+        f"from pathlib import Path; Path({str(witness)!r}).touch(); "
+        "import sys,time; print('qualified stage: 読取',flush=True); "
+        "print('stage diagnostic',file=sys.stderr,flush=True); "
+        + ("print('x' * (1024 * 1024 + 1024),flush=True); " if outcome == "oversize" else "")
+        + ("time.sleep(30)" if outcome == "timeout" else f"sys.exit({1 if outcome == 'failure' else 0})")
+    )
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+    try:
+        if outcome == "timeout":
+            with pytest.raises(subprocess.TimeoutExpired):
+                _communicate_qualification(child, 2, evidence)
+        elif outcome == "oversize":
+            with pytest.raises(AssertionError):
+                _communicate_qualification(child, 10, evidence)
+            assert child.returncode == 0
+        else:
+            _communicate_qualification(child, 10, evidence)
+            assert child.returncode == (1 if outcome == "failure" else 0)
+        assert witness.exists()
+        assert "qualified stage: 読取" in evidence.read_text()
+        if outcome == "oversize":
+            assert evidence.stat().st_size <= 1024 * 1024
+            assert evidence.read_text().startswith("[qualification log truncated at 1 MiB]")
+        else:
+            assert "stage diagnostic" in evidence.read_text()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=5)
+
+
 class WireStream:
     def __init__(self):
         self.replies = queue.Queue()
@@ -1110,14 +1178,13 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                                                  "MITHRIL_OWNED_NATIVE_MAIN_MODULE": config["desktopMainModule"] or "",
                                                  "MITHRIL_OWNED_DESKTOP_CHAT_SOURCE": config["desktopChatSource"] or ""},
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                stdout, stderr = process.communicate(timeout=210)
                 evidence = request.config.getoption("--owned-qualification-output")
+                evidence_path = None
                 if evidence:
                     directory = Path(evidence)
                     assert directory.is_absolute(), "qualification evidence requires an absolute task directory"
-                    directory.mkdir(parents=True, exist_ok=True)
-                    assert len(stdout.encode()) + len(stderr.encode()) <= 1024 * 1024
-                    (directory / (Path(qualifier_file).stem + ".log")).write_text(stdout + "\n" + stderr)
+                    evidence_path = directory / (Path(qualifier_file).stem + ".log")
+                stdout, stderr = _communicate_qualification(process, 210, evidence_path)
                 assert process.returncode == 0, stdout + "\n" + stderr
                 outputs.append(stdout)
             stdout = "\n".join(outputs)
