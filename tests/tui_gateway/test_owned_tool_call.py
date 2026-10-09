@@ -179,6 +179,8 @@ def owned_sessions(tmp_path, monkeypatch, request):
         "test_owned_memory_preserves_profile_prompt_and_replay",
         "test_owned_session_search_uses_attached_durable_store",
         "test_owned_inline_store_replacement_retires_approval",
+        "test_owned_memory_mirror_route_change_retires_consent",
+        "test_owned_memory_metadata_cannot_redirect_mirror_after_builtin_write",
         "test_real_browser_api_owned_hermes_network",
     }
     if inline_state:

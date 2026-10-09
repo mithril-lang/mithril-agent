@@ -2,6 +2,8 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import hashlib
+import json
 
 from hermes_constants import hermes_home_key
 
@@ -12,7 +14,7 @@ _TARGETS = ContextVar("agent_inline_targets", default=None)
 # Mutable data revisions stay live; these are execution owners, not data snapshots.
 _TARGET_ATTRIBUTES = {
     "todo_list": ("_todo_store",),
-    "memory": ("_memory_store", "_memory_notify", "_build_memory_write_metadata"),
+    "memory": ("_memory_store", "_memory_notify", "_memory_write_routes", "_build_memory_write_metadata"),
     "session_search": ("_get_session_db_for_recall",),
     "clarify": ("clarify_callback",),
     "read_terminal": ("read_terminal_callback",),
@@ -32,6 +34,17 @@ def _read_target(agent, attribute):
     if attribute == "_memory_notify":
         manager = getattr(agent, "_memory_manager", None)
         return manager.notify_memory_tool_write if manager else None
+    if attribute == "_memory_write_routes":
+        manager = getattr(agent, "_memory_manager", None)
+        routes = []
+        for provider in getattr(manager, "providers", ()):
+            signature = getattr(provider, "identity_signature", None)
+            encoded = json.dumps(signature() if signature else {}, sort_keys=True, allow_nan=False).encode()
+            if len(encoded) > 128 * 1024:
+                raise ValueError("memory provider identity exceeds owned limit")
+            routes.append((id(provider), provider.name, callable_identity(provider.on_memory_write),
+                           hashlib.sha256(encoded).hexdigest()))
+        return tuple(routes)
     return getattr(agent, attribute, None)
 
 
@@ -44,7 +57,8 @@ def inline_target(agent, attribute):
 
 def select_inline_targets(agent, name, executor):
     targets = {attr: _read_target(agent, attr) for attr in _TARGET_ATTRIBUTES.get(name, ())}
-    identities = tuple((attr, callable_identity(value) if callable(value) else id(value))
+    identities = tuple((attr, value if attr == "_memory_write_routes" else
+                        callable_identity(value) if callable(value) else id(value))
                        for attr, value in targets.items())
 
     def execute(agent, args, ctx):

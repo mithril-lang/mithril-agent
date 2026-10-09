@@ -788,6 +788,11 @@ class MemoryManager:
         """Notify external providers when the built-in memory tool writes (skips builtin, the source)."""
 
         def _notify(provider: MemoryProvider) -> None:
+            # Metadata construction follows the built-in commit and can retire
+            # owned authority. Never redirect the subsequent mirror effect.
+            from agent.code_child_dispatch import tool_only_authority_is_current
+            if not tool_only_authority_is_current():
+                raise RuntimeError("Owned memory notification authority changed")
             mode = self._provider_memory_write_metadata_mode(provider)
             if mode == "legacy":
                 provider.on_memory_write(action, target, content)
