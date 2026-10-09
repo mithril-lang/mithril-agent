@@ -30,7 +30,7 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tools import write_approval as wa
     from tools.memory_tool import load_on_disk_store, MemoryStore
-    from tools.write_approval_decisions import pending_decision_lock, write_receipt, decision_receipt
+    from tools.write_approval_decisions import pending_decision_lock, write_receipt, decision_receipt, receipt_path
     import tui_gateway.server as server
     from tui_gateway.transport import current_transport
     from tui_gateway.ws import WSTransport
@@ -80,12 +80,15 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
                     if choice == "saved":
                         assert MemoryStore().add(target, content)["success"]
                         saved[owner].append(content)
+                    if cycle == 1:
+                        write_receipt(wa.MEMORY, record, 'resolve-' + choice,
+                                      'applied' if choice == 'saved' else 'rejected', resolution=choice)
             recovery.append({"owner": owner, "cycle": cycle, "target": target, "decision": "resolve-" + choice,
                              "id": record["id"], "summary": record["summary"], "content": content,
-                             "lost": cycle == 2 and target == "user"})
+                             "lost": cycle == 2 and target == "user", "recorded": cycle == 1})
     with server._session_profile_runtime_scope(owned_sessions["a"], hydrate_secrets=False):
         with pending_decision_lock(wa.MEMORY, retired["id"]):
-            write_receipt(wa.MEMORY, wa.get_pending(wa.MEMORY, retired["id"]), "approve", "unknown")
+            write_receipt(wa.MEMORY, wa.get_pending(wa.MEMORY, retired["id"]), "resolve-unsaved", "rejected", resolution="unsaved")
     retired["decision"] = "resolve-unsaved"
     for owner in expected:
         expected[owner] = saved[owner] + expected[owner]
@@ -105,13 +108,19 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
             frames.append((name, dict(params)))
             command = params.get("command", "").lstrip("/")
             before = None
+            recorded_bytes = None
             if command.startswith(("memory resolve-saved ", "memory resolve-unsaved ")):
                 with server._session_profile_runtime_scope(server._sessions[params["session_id"]], hydrate_secrets=False):
                     before = {key: load_on_disk_store().review_state(key) for key in ("memory", "user")}
+                    pending_id = command.split()[2]
+                    if decision_receipt(wa.MEMORY, pending_id).get('resolution') is not None:
+                        recorded_bytes = receipt_path(wa.MEMORY, pending_id).read_bytes()
             result = handler(rid, params)
             if before is not None:
                 with server._session_profile_runtime_scope(server._sessions[params["session_id"]], hydrate_secrets=False):
                     after = {key: load_on_disk_store().review_state(key) for key in ("memory", "user")}
+                    if recorded_bytes is not None:
+                        assert receipt_path(wa.MEMORY, pending_id).read_bytes() == recorded_bytes
                 assert after == before
                 closure_snapshots.append(before)
             if command == f"memory review {retired['id']}" and not delayed.is_set():
@@ -221,7 +230,10 @@ def test_electron_memory_review_keeps_profile_and_result_custody(owned_sessions,
                             if choice == "saved":
                                 assert MemoryStore().add(target, content)["success"]
                                 expected[owner].append(content)
-                        rows.append({"owner": owner, "id": record["id"], "target": target, "decision": "resolve-" + choice, "content": content, "lost": cycle == 2 and target == "user"})
+                            if cycle == 1:
+                                write_receipt(wa.MEMORY, record, 'resolve-' + choice,
+                                              'applied' if choice == 'saved' else 'rejected', resolution=choice)
+                        rows.append({"owner": owner, "id": record["id"], "target": target, "decision": "resolve-" + choice, "content": content, "lost": cycle == 2 and target == "user", "recorded": cycle == 1})
                 if cycle == 2:
                     lost_commands[f"memory resolve-unsaved {rows[-1]['id']}"] = "web-closure"
                 web_owner[0] = owner

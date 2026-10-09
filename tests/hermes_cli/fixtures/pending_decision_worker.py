@@ -33,6 +33,14 @@ def wait():
 
 
 commands._apply_one = apply
+if config.get('pause') == 'retire':
+    original_unlink = Path.unlink
+    def retire(path, *args, **kwargs):
+        if path == Path(config['pending_path']):
+            (root / (name + '.retiring')).write_text('terminal assessment persisted')
+            wait()
+        return original_unlink(path, *args, **kwargs)
+    Path.unlink = retire
 store = load_on_disk_store()
 frozen = store._system_prompt_snapshot.copy()
 (root / (name + '.ready')).write_text('ready')

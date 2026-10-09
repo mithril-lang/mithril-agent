@@ -79,14 +79,20 @@ def clear_failed_claim(subsystem: str, pending_id: str):
     receipt_path(subsystem, pending_id).unlink()
 
 
-def finish_decision(subsystem: str, record: dict, decision: str, *, resolution=None):
-    """Record the terminal outcome before removing exactly the claimed record."""
+def finish_decision(subsystem: str, record: dict, decision: str, *, resolution=None, existing_receipt=None):
+    """Retire exactly the claimed record, retaining a reviewed prior assessment verbatim."""
     from tools import write_approval as wa
     path = _path(subsystem, record['id'])
     if wa.get_pending(subsystem, record['id']) != record:
         # A noncooperating filesystem writer replaced the queue entry. Preserve it.
-        write_receipt(subsystem, record, decision, 'unknown')
+        if existing_receipt is None:
+            write_receipt(subsystem, record, decision, 'unknown')
         raise OSError('Pending proposal changed during the decision; inspect saved data. No decision will be repeated.')
     terminal = {'approve': 'applied', 'reject': 'rejected', 'resolve-saved': 'applied', 'resolve-unsaved': 'rejected'}[decision]
-    write_receipt(subsystem, record, decision, terminal, resolution=resolution)
+    if existing_receipt is None:
+        write_receipt(subsystem, record, decision, terminal, resolution=resolution)
+    elif (resolution not in {'saved', 'unsaved'} or decision != 'resolve-' + resolution or
+          existing_receipt.get('resolution') != resolution or existing_receipt.get('decision') != decision or
+          existing_receipt.get('state') != terminal or decision_receipt(subsystem, record['id']) != existing_receipt):
+        raise OSError('Recorded assessment changed; no queue record was removed.')
     path.unlink()
