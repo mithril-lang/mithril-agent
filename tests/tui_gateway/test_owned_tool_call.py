@@ -1035,6 +1035,16 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
     import tui_gateway.server as server
     from agent.memory_provider import spawn_context_thread
 
+    # Freeze the durable history after its real initial flush, including DB
+    # metadata. Background persistence may stamp an unflushed seed while the
+    # longer browser qualification runs; it must not change the conversation.
+    original_histories = {}
+    for owner, session in owned_sessions.items():
+        with session["history_lock"]:
+            agent = session["agent"]
+            agent._flush_messages_to_session_db(agent._session_messages)
+            original_histories[owner] = copy.deepcopy(agent._session_messages)
+
     fund = request.config.getoption("--owned-browser-fund-root")
     node = shutil.which("node")
     if not fund or not node:
@@ -1131,8 +1141,7 @@ def test_real_browser_api_owned_hermes_network(owned_sessions, monkeypatch, requ
                               "desktop_wasm_scenarios": 8 if config["desktopChatSource"] else 0,
                               "actual_attempts": len(expected_attempts), "replay_redispatches": 0, "foreign_profile_attempts": 0}))
             for owner in ["a", "b"]:
-                assert owned_sessions[owner]["agent"]._session_messages == [
-                    {"role": "user", "content": "owned conversation"}]
+                assert owned_sessions[owner]["agent"]._session_messages == original_histories[owner]
         finally:
             if process.poll() is None:
                 process.kill()
