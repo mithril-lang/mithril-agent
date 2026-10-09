@@ -220,7 +220,8 @@ def _target_preview(sessions, caller, target, name, args, **changes):
 
 
 @pytest.mark.platforms("posix")
-def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkeypatch):
+@pytest.mark.parametrize("tool", ["read_file", "write_file"])
+def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkeypatch, tool):
     from hermes_cli.plugins import PluginManager
 
     manager = PluginManager()
@@ -233,21 +234,31 @@ def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkey
         redirected.mkdir()
         alias = home / f"preview-alias-{visit}"
         alias.symlink_to(original, target_is_directory=True)
-        args = {"path": str(alias / "note.txt"), "content": "approved content"}
-        preview = _target_preview(owned_sessions, owner, owner, "write_file", args)["result"]
+        if tool == "read_file":
+            (original / "note.txt").write_text(f"original owner {owner} visit {visit}")
+            (redirected / "note.txt").write_text(f"redirected owner {owner} visit {visit}")
+        before = tuple(path.read_text() if path.exists() else None
+                       for path in [original / "note.txt", redirected / "note.txt"])
+        args = {"path": str(alias / "note.txt")}
+        if tool == "write_file":
+            args["content"] = "approved content"
+        preview = _target_preview(owned_sessions, owner, owner, tool, args)["result"]
         binding = preview["target_binding"]
         assert binding["coverage"] == "partial" and binding["target"]["path"] == str(original / "note.txt")
-        assert not (original / "note.txt").exists()
-        changed = _call(owned_sessions, owner, owner, "write_file", {**args, "content": "other"},
+        assert tuple(path.read_text() if path.exists() else None
+                     for path in [original / "note.txt", redirected / "note.txt"]) == before
+        changed_args = {**args, **({"content": "other"} if tool == "write_file" else {"limit": 2})}
+        changed = _call(owned_sessions, owner, owner, tool, changed_args,
                         f"different-{visit}", target_digest=binding["digest"])
-        assert changed["error"]["code"] == 4092 and not (original / "note.txt").exists()
+        assert changed["error"]["code"] == 4092
         alias.unlink()
         alias.symlink_to(redirected, target_is_directory=True)
-        stale = _call(owned_sessions, owner, owner, "write_file", args, f"stale-preview-{visit}",
+        stale = _call(owned_sessions, owner, owner, tool, args, f"stale-preview-{visit}",
                       target_digest=binding["digest"])
         assert stale["error"]["code"] == 4092
-        assert not (original / "note.txt").exists() and not (redirected / "note.txt").exists()
-        fresh = _target_preview(owned_sessions, owner, owner, "write_file", args)["result"]["target_binding"]
+        assert tuple(path.read_text() if path.exists() else None
+                     for path in [original / "note.txt", redirected / "note.txt"]) == before
+        fresh = _target_preview(owned_sessions, owner, owner, tool, args)["result"]["target_binding"]
         assert fresh["digest"] != binding["digest"]
 
         def redirect(*, args, next_call, **kwargs):
@@ -256,22 +267,30 @@ def test_owned_target_preview_pins_exact_request_and_path(owned_sessions, monkey
             return next_call(args)
 
         manager._middleware["tool_execution"] = [redirect]
-        mid = _call(owned_sessions, owner, owner, "write_file", args, f"mid-preview-{visit}",
+        mid = _call(owned_sessions, owner, owner, tool, args, f"mid-preview-{visit}",
                     target_digest=fresh["digest"])["result"]
-        assert mid["state"] == "rejected"
+        assert mid["state"] == "rejected" and mid["output"] is None
         row = owned_sessions[owner]["agent"]._session_db.get_tool_attempt("same-durable-owner", mid["attempt_id"])
         assert row["dispatched_at"] is None
-        assert not (original / "note.txt").exists() and not (redirected / "note.txt").exists()
+        assert tuple(path.read_text() if path.exists() else None
+                     for path in [original / "note.txt", redirected / "note.txt"]) == before
         manager._middleware.clear()
         alias.unlink()
         alias.symlink_to(redirected, target_is_directory=True)
-        result = _call(owned_sessions, owner, owner, "write_file", args, f"fresh-preview-{visit}",
+        result = _call(owned_sessions, owner, owner, tool, args, f"fresh-preview-{visit}",
                        target_digest=fresh["digest"])["result"]
-        assert result["state"] == "returned" and (redirected / "note.txt").read_text() == "approved content"
-        replay = _call(owned_sessions, owner, owner, "write_file", args, f"fresh-preview-{visit}",
+        assert result["state"] == "returned"
+        if tool == "read_file":
+            assert before[1] in result["output"]["content"]
+            assert before[0] not in result["output"]["content"]
+            assert (original / "note.txt").read_text() == before[0]
+        else:
+            assert (redirected / "note.txt").read_text() == "approved content"
+            assert not (original / "note.txt").exists()
+        replay = _call(owned_sessions, owner, owner, tool, args, f"fresh-preview-{visit}",
                        target_digest=fresh["digest"])["result"]
-        assert replay["duplicate"] and replay["observation"] == "metadata-only"
-        conflict = _call(owned_sessions, owner, owner, "write_file", args, f"fresh-preview-{visit}",
+        assert replay["duplicate"] and replay["observation"] == "metadata-only" and replay["output"] is None
+        conflict = _call(owned_sessions, owner, owner, tool, args, f"fresh-preview-{visit}",
                          target_digest=binding["digest"])
         assert conflict["error"]["code"] == 4092
 
@@ -548,7 +567,7 @@ def test_owned_effect_manifest_retires_profile_context_without_changing_prompt(o
     foreign = session_tool_snapshot(b)
     declarations = {m["name"]: m for m in original["effect_manifests"]}
     assert declarations["write_file"]["coverage"] == "partial"
-    assert declarations["read_file"]["coverage"] == "unknown"
+    assert declarations["todo_list"]["coverage"] == "unknown"
     prompt = copy.deepcopy(a["agent"].tools)
     home = Path(a["profile_home"])
     path = home / "manifest-write.txt"

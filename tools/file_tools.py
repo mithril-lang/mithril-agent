@@ -30,7 +30,7 @@ from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
     _resolve_path_for_task)
-from tools.file_tools_owned_target import local_write_target
+from tools.file_tools_owned_target import local_file_target
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
@@ -1388,9 +1388,12 @@ def _read_file_schema_overrides():
     return {}
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000, dynamic_schema_overrides=_read_file_schema_overrides)
+registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000, dynamic_schema_overrides=_read_file_schema_overrides,
+    dispatch_target=local_file_target,
+    effect_manifest={"coverage": "partial", "effects": ["file.read"], "targets": [
+        {"kind": "file-path", "argument": "/path", "resolution": "selected-terminal-runtime"}]})
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000,
-    dispatch_target=local_write_target,
+    dispatch_target=local_file_target,
     effect_manifest={"coverage": "partial", "effects": ["file.write"], "targets": [
         {"kind": "file-path", "argument": "/path", "resolution": "selected-terminal-runtime"}]})
 def _patch_schema_overrides():

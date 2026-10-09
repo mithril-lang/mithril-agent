@@ -1,7 +1,8 @@
-"""Bind the local file writer's actual path resolver without starting a runtime."""
+"""Bind the local file tools' actual path resolver without starting a runtime."""
 
 
-def local_write_target(args, task_id):
+def local_file_target(args, task_id):
+    from agent.file_safety import get_nt_namespace_error
     from tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
 
     # A host path is not an SSH/container identity. Those namespaces need their
@@ -10,5 +11,8 @@ def local_write_target(args, task_id):
         return None
     path = args.get("path")
     if not isinstance(path, str) or not path:
+        return None
+    # Preserve the file handlers' raw-path guard before resolving Windows namespaces.
+    if get_nt_namespace_error(path):
         return None
     return {"namespace": "selected-local-terminal", "path": str(_resolve_path_for_task(path, task_id))}
