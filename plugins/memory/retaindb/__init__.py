@@ -316,6 +316,18 @@ class RetainDBMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "retaindb"
 
+    def identity_signature(self) -> dict[str, Any]:
+        # Read initialized routing only. The generic owned fence hashes this
+        # privately; credentials and mutable memory data never enter identity.
+        client = self._client
+        return {"retaindb": {
+            "client_instance": id(client) if client is not None else None,
+            "base_url": client.base_url if client is not None else None,
+            "project": client.project if client is not None else None,
+            "user_id": self._user_id, "session_id": self._session_id,
+            "agent_id": self._agent_id,
+        }}
+
     def is_available(self) -> bool:
         return bool(get_secret("RETAINDB_API_KEY"))
 
