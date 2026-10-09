@@ -1,4 +1,4 @@
-import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
+import { parseCommandDispatch, parseSlashCommand, shouldFallbackToDispatch } from '@hermes/shared/slash'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
@@ -11,7 +11,7 @@ import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { getUiState } from './uiStore.js'
-import { describeSlashExecError, shouldFallbackToDispatch } from './userMessages.js'
+import { describeSlashExecError } from './userMessages.js'
 
 /** Shared metrics count each user-typed command once, from the client: the gateway no longer
  *  counts slash.exec, so locally handled commands (/resume, /skin, overlays) land too.
@@ -178,45 +178,53 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
 
     countTyped()
     gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sid })
-      .then(r => {
-        if (stale()) {
-          return
-        }
-
-        if (parseCommandDispatch(r)) {
-          return handleDispatch(r)
-        }
-
-        const body = r?.output || `/${parsed.name}: no output`
-        const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
-        const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
-
-        long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
-      })
-      .catch((execErr: unknown) => {
-        // Only "slash.exec does not own this command" refusals (4011/4018) may
-        // fall through to command.dispatch. A helper timeout/crash (5030) must
-        // be shown as itself — the fallback's "not a quick/plugin/bundle/skill
-        // command" refusal used to bury the real cause and imply the command
-        // did not exist.
-        if (!shouldFallbackToDispatch(execErr)) {
-          if (!stale()) {
-            sys(`error: ${describeSlashExecError(parsed.name, execErr)}`)
+      .then(
+        r => {
+          if (stale()) {
+            return
           }
 
-          return
-        }
+          if (parseCommandDispatch(r)) {
+            return handleDispatch(r)
+          }
 
-        gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
-          .then((raw: unknown) => {
-            if (stale()) {
-              return
+          const body = r?.output || `/${parsed.name}: no output`
+          const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+          const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+          long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
+        },
+        (execErr: unknown) => {
+          if (stale()) {
+            return
+          }
+
+          // Only exact pre-execution ownership refusals (4018) may
+          // fall through to command.dispatch. A helper timeout/crash (5030) must
+          // be shown as itself — the fallback's "not a quick/plugin/bundle/skill
+          // command" refusal used to bury the real cause and imply the command
+          // did not exist.
+          if (!shouldFallbackToDispatch(execErr)) {
+            if (!stale()) {
+              sys(`error: ${describeSlashExecError(parsed.name, execErr)}`)
             }
 
-            handleDispatch(raw)
-          })
-          .catch(guardedErr)
-      })
+            return
+          }
+
+          return gw
+            .request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
+            .then((raw: unknown) => {
+              if (stale()) {
+                return
+              }
+
+              handleDispatch(raw)
+            })
+            .catch(guardedErr)
+        }
+      )
+      .catch(guardedErr)
 
     return true
   }

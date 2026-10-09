@@ -51,9 +51,7 @@ export const backendGaveUp = (code: null | number, lastLine?: string): string =>
   const detail = detailLine(lastLine)
 
   return [
-    code === null
-      ? t('userMessages.backend.gaveUpTitle')
-      : t('userMessages.backend.gaveUpTitleWithCode', String(code)),
+    code === null ? t('userMessages.backend.gaveUpTitle') : t('userMessages.backend.gaveUpTitleWithCode', String(code)),
     detail,
     t('userMessages.backend.gaveUpReconnect'),
     t('userMessages.backend.gaveUpLogs')
@@ -134,14 +132,8 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
     (code, text) => (code === RPC_SESSION_NOT_FOUND || code === undefined) && SESSION_NOT_FOUND_RE.test(text),
     () => t('userMessages.rpc.sessionNotFound')
   ],
-  [
-    (_code, text) => NOT_CONNECTED_RE.test(text),
-    () => t('userMessages.rpc.notConnected')
-  ],
-  [
-    (_code, text) => TIMED_OUT_RE.exec(text),
-    m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')
-  ]
+  [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
+  [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]
 
 let rpcErrorLogSink: ((line: string) => void) | null = null
@@ -191,35 +183,10 @@ export const describeSlashExecError = (command: string, err: unknown): string =>
   if (/slash worker (?:exited|closed pipe|start failed)/.test(text)) {
     const detail = detailLine(text.replace(/^slash worker (?:exited|closed pipe:?|start failed:?)\s*/, ''))
 
-    return [t('userMessages.rpc.slashCrashed', command), detail]
-      .filter(Boolean)
-      .join('\n')
+    return [t('userMessages.rpc.slashCrashed', command), detail].filter(Boolean).join('\n')
   }
 
   return describeRpcError(err)
-}
-
-// slash.exec answers 4018 with exactly these texts when it does NOT own the
-// command (tui_gateway/methods_tools.py). Every other 4018 came from a
-// command.dispatch handler slash.exec already forwarded to (/retry, /undo,
-// /compress, /queue, bundles): re-dispatching would run a mutating command twice.
-const NOT_MINE_REFUSAL_RE = /^skill command: use command\.dispatch for \/|use command\.dispatch for \/snapshot restore/
-
-/** command.dispatch is only a fallback for "slash.exec does not own this command" refusals. */
-export const shouldFallbackToDispatch = (err: unknown): boolean => {
-  const { code, message } = rpcShape(err)
-
-  if (code === RPC_NOT_DISPATCHABLE) {
-    return NOT_MINE_REFUSAL_RE.test(message ?? '')
-  }
-
-  if (code !== undefined) {
-    return false
-  }
-
-  // Legacy/attached backends without a code: keep the historical behaviour
-  // unless the text is unmistakably a helper failure.
-  return !/slash worker|timed out|not connected|not running/.test(message ?? '')
 }
 
 // ── Turn failures (message.complete status=error) ─────────────────────────

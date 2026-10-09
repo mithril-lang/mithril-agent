@@ -115,3 +115,17 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
       return null
   }
 }
+
+/** Only an attested pre-execution ownership refusal admits another dispatcher.
+ * Other 4018s can follow effects in slash.exec's own command.dispatch path;
+ * transport failures and code-less text cannot prove non-execution. */
+export function shouldFallbackToDispatch(error: unknown): boolean {
+  if (!(error instanceof Error) || !('code' in error) || error.code !== 4018) {
+    return false
+  }
+
+  return (
+    /^skill command: use command\.dispatch for \/[^\s/]+$/.test(error.message) ||
+    error.message === 'snapshot restore mutates live config/state; use command.dispatch for /snapshot restore'
+  )
+}

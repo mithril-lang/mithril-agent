@@ -122,8 +122,10 @@ retains its legacy unscoped contract.
 1. Built-in client commands (`/help`, `/quit`, `/clear`, `/resume`, `/copy`, `/paste`, ...) are
    handled locally in `app.tsx`.
 2. Everything else → `slash.exec`, which runs in the persistent `_SlashWorker` subprocess →
-   `command.dispatch` fallback, which the gateway resolves into a skill / alias / exec directive
+   `command.dispatch` only after an exact structured 4018 pre-execution ownership refusal. The gateway resolves into a skill / alias / exec directive
    (a skill command resolves to `{type: "skill", message}` and is submitted as a normal prompt).
+
+`apps/shared/src/slash.ts::shouldFallbackToDispatch` is shared with Desktop. No code-less legacy error, worker failure or unknown result admits dispatch. Retired slash flights do not dispatch a refusal, and errors processing a successful response only reach the error presenter.
 
 `commands.catalog` (empty-query list) and `complete.slash` (typed-query completions) already include
 built-ins, user `quick_commands`, AND skill-derived commands (`scan_skill_commands()` /

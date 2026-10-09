@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { looksLikeSlashCommand, parseCommandDispatch, parseSlashCommand } from './slash'
+import { looksLikeSlashCommand, parseCommandDispatch, parseSlashCommand, shouldFallbackToDispatch } from './slash'
 
 describe('parseSlashCommand', () => {
   it('splits the name off a single separator and lower-cases it', () => {
@@ -68,5 +68,31 @@ describe('parseCommandDispatch', () => {
     expect(parseCommandDispatch({ type: 'send', message: 42 })).toBeNull()
     expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
     expect(parseCommandDispatch({ type: 'nope' })).toBeNull()
+  })
+})
+
+describe('dispatch ownership refusal', () => {
+  it('admits only structured exact pre-execution refusals', () => {
+    for (const message of [
+      'skill command: use command.dispatch for /work',
+      'snapshot restore mutates live config/state; use command.dispatch for /snapshot restore'
+    ]) {
+      expect(shouldFallbackToDispatch(Object.assign(new Error(message), { code: 4018 }))).toBe(true)
+      expect(shouldFallbackToDispatch(new Error(message))).toBe(false)
+    }
+  })
+
+  it('refuses ambiguous, post-effect, forged and malformed failures', () => {
+    for (const error of [
+      undefined,
+      'skill command: use command.dispatch for /work',
+      new Error('socket closed'),
+      Object.assign(new Error('quick command failed with exit code 1'), { code: 4018 }),
+      Object.assign(new Error('skill command: use command.dispatch for /work extra'), { code: 4018 }),
+      Object.assign(new Error('prefix use command.dispatch for /snapshot restore'), { code: 4018 }),
+      Object.assign(new Error('skill command: use command.dispatch for /work'), { code: 5030 })
+    ]) {
+      expect(shouldFallbackToDispatch(error)).toBe(false)
+    }
   })
 })
