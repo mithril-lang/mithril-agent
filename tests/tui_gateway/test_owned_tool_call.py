@@ -691,7 +691,7 @@ def test_compiled_owned_sdk_real_stdio_roundtrip(owned_sessions, monkeypatch, mo
                     report.append(params)
                     reply = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
                 else:
-                    assert method in {"tools.show", "tools.call", "tools.attempts"}
+                    assert method in {"tools.show", "tools.call", "tools.target_preview", "tools.attempts"}
                     methods.append(method)
                     reply = server.dispatch(request, transport=transports[active])
                 if reply is not None:

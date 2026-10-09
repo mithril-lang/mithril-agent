@@ -515,9 +515,10 @@ the additive field preserves existing callers and their request digest.
 
 The digest is target identity, not a signed grant or complete effect declaration.
 Only local `write_file` currently supplies a resolver. This endpoint is locally
-qualified through the real owned RPC/agent/file handler; shared SDK, API relay,
-human approval display and preview-to-executor grant integration still need to
-consume it. Namespace-specific targets, inode/atomic file effects, distributed
+qualified through the real owned RPC/agent/file handler; Mithril workspace agency.15 candidate consumes it through the shared SDK,
+API relay and human approval/grant identity in local loopback qualification.
+That evidence retains provider/issuer/profile fixtures and does not publish the
+package or establish an installed Desktop dependency. Namespace-specific targets, inode/atomic file effects, distributed
 budgets and public/installed qualification remain required. The shared selected-task
 override preparation now lives in `tui_gateway/owned_tool_targets.py`.
 
