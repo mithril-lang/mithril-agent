@@ -16,7 +16,7 @@ for (let i=0;i<argv.length;i+=2) {
 }
 const quote = s => "'" + String(s).replaceAll("'", "'\\''") + "'";
 const env = {PATH:process.env.PATH,HOME:process.env.HOME};
-function run(cmd,args,{input,log,timeout=1800000}={}) {
+function run(cmd,args,{input,log,timeout=3600000}={}) {
   return new Promise((ok,bad)=>{
     const p=spawn(cmd,args,{cwd:root,env,stdio:['pipe','pipe','pipe']});
     const chunks=[]; let size=0;

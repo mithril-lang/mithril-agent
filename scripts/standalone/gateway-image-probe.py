@@ -16,6 +16,13 @@ with sqlite3.connect(':memory:') as db:
     db.execute("INSERT INTO docs VALUES ('hermes')")
     assert db.execute("SELECT count(*) FROM docs WHERE docs MATCH 'erm'").fetchone()[0] == 1
 home = Path('/opt/data')
+with sqlite3.connect(home / 'standalone-restart-proof.sqlite') as db:
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('CREATE TABLE IF NOT EXISTS proof (commit_sha TEXT NOT NULL)')
+    if len(sys.argv) > 2:
+        assert db.execute('SELECT commit_sha FROM proof').fetchall() == [(sys.argv[1],)], 'Restart lost SQLite state'
+    else:
+        db.execute('INSERT INTO proof VALUES (?)', (sys.argv[1],))
 marker = home / 'standalone-restart-proof.json'
 if len(sys.argv) > 2:
     assert json.loads(marker.read_text())['commit'] == sys.argv[1], 'Restart lost durable state'

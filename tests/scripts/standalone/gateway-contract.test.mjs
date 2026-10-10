@@ -6,10 +6,10 @@ import {seal,admit,validateOwner} from '../../../scripts/standalone/gateway-cont
 test('admission binds success, source, recipe, image, owner and freshness', () => {
   const key=randomBytes(32), now=Date.now();
   const expected={repository:'mithril-lang/mithril-agent',sha:'a'.repeat(40),recipeDigest:'b'.repeat(64),ownerIdentity:'owner'};
-  const r={...expected,status:'success',finishedAt:new Date(now).toISOString(),imageId:'sha256:'+'c'.repeat(64),productionEligible:false};
+  const r={...expected,status:'success',finishedAt:new Date(now).toISOString(),imageId:'sha256:'+'c'.repeat(64),checks:['image-build','offline-regressions','image-runtime'],productionEligible:false};
   assert.equal(admit(seal(r,key),key,expected,now).imageId,r.imageId);
   assert.throws(()=>admit({...seal(r,key),receipt:{...r,sha:'d'.repeat(40)}},key,expected,now),/signature/);
-  for (const patch of [{status:'failed'}, {imageId:null}, {productionEligible:true}, {finishedAt:new Date(now-86400001).toISOString()}]) assert.throws(()=>admit(seal({...r,...patch},key),key,expected,now));
+  for (const patch of [{status:'failed'}, {imageId:null}, {checks:[]}, {checks:['image-build','image-runtime']}, {productionEligible:true}, {finishedAt:new Date(now-86400001).toISOString()}]) assert.throws(()=>admit(seal({...r,...patch},key),key,expected,now));
   assert.throws(()=>admit(seal(r,key),key,{...expected,ownerIdentity:'other'},now),/mismatch/);
 });
 

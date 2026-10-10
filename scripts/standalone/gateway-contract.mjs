@@ -19,6 +19,9 @@ export function admit(envelope, key, expected, now = Date.now()) {
   const age = now - Date.parse(r.finishedAt);
   if (r.status !== 'success' || !Number.isFinite(age) || age < 0 || age > 86400000 || !/^sha256:[a-f0-9]{64}$/.test(r.imageId ?? '')) throw Error('Successful fresh image qualification required');
   if (r.productionEligible !== false) throw Error('Gateway trial qualification cannot authorize a production release');
+  for (const check of ['image-build','offline-regressions','image-runtime']) {
+    if (!Array.isArray(r.checks) || !r.checks.includes(check)) throw Error(`Missing qualification stage: ${check}`);
+  }
   return r;
 }
 export function validateOwner(owner, host, checkout) {
