@@ -9,6 +9,14 @@ config = home / 'config.yaml'
 if not config.exists():
     # JSON is also valid YAML. No local profiles, bot tokens or schedules are copied.
     config.write_text(json.dumps({
+        'providers': {
+            'mithril-inference': {
+                'name': 'Mithril Inference',
+                'base_url': 'https://api.mithril.fund/v1',
+                'key_env': 'CUSTOM_PROVIDER_MITHRIL_KEY',
+                'transport': 'chat_completions',
+            },
+        },
         'model': {
             'api_mode': 'chat_completions',
             'base_url': 'https://api.mithril.fund/v1',
