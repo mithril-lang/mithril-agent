@@ -2,10 +2,10 @@ import {createHash,createHmac,timingSafeEqual} from 'node:crypto';
 
 export const profile = Object.freeze({
   schema: 1, name: 'gateway-docker-linux-amd64', platform: 'linux/amd64',
-  coverage: ['repository Dockerfile', 'offline gateway regression suite', 'real image provenance, SQLite, privilege drop and restart'],
-  excluded: ['native Desktop and installers', 'other architectures', 'live inference', 'production publication'],
+  coverage: ['repository Dockerfile', 'offline API gateway regression suite', 'real image provenance, SQLite, privilege drop and restart'],
+  excluded: ['native Desktop and installers', 'messaging adapter delivery', 'other architectures', 'live inference', 'production publication'],
   minimumFreeBytes: 12 * 1024 ** 3,
-  offlineTests: ['tests/gateway/', 'tests/hermes_cli/test_container_boot.py', 'tests/hermes_cli/test_gateway_external_supervisor.py'],
+  offlineTests: ['tests/gateway/test_api_server*.py', 'tests/gateway/test_multiplex_api_server_routing.py', 'tests/gateway/test_config.py', 'tests/gateway/test_custom_provider_request_overrides.py', 'tests/hermes_cli/test_container_boot.py', 'tests/hermes_cli/test_gateway_external_supervisor.py'],
 });
 export const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 export function seal(receipt, key) {

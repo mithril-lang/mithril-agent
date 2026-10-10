@@ -9,7 +9,7 @@ The controller runs only a clean committed source. Its fixed recipe streams
 an exact Git archive to a disposable runner directory and builds the repository
 image without controller credentials, host source mounts or registry login.
 The install stamp records the actual source SHA. Test dependency setup uses
-Hermes PM and the frozen source lock. The gateway regression suite runs through
+Hermes PM and the frozen source lock. The API gateway, configuration, custom-provider and supervision regression tests run through
 `scripts/run_tests.sh` in a separate container with no external network,
 2 CPUs, 4 GiB memory, dropped capabilities and no Docker socket.
 
