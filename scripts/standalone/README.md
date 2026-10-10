@@ -13,7 +13,12 @@ Hermes PM and the frozen source lock. The gateway regression suite runs through
 `scripts/run_tests.sh` in a separate container with no external network,
 2 CPUs, 4 GiB memory, dropped capabilities and no Docker socket.
 
-The controller then drives real image startup as the Hermes user, SQLite WAL
+The controller also derives an API-only cloud trial image with UID/GID 1000,
+an isolated home and an explicit Mithril inference provider definition. Its
+foreground gateway delegates supervision to the hosting platform. It copies
+no installed profiles, schedules, message history or messaging credentials.
+
+The controller then drives this trial image as the Hermes user, SQLite WAL
 safety and FTS5, API authentication and persistence across restart. The runtime
 uses a disposable named volume and no external network. There are no provider
 calls. Live inference and platform-specific bot delivery belong to the later
@@ -52,7 +57,9 @@ storage. Insufficient capacity fails before archive transfer or build. Each
 verification attempt records a private HMAC-signed success or failure receipt
 with source, recipe, owner, stages, image identity and completion time. Failure,
 changed identities, stale receipts and forged signatures cannot be admitted.
-Receipts always have `productionEligible: false`.
+Receipts identify the derived trial image and always have
+`productionEligible: false`. The offline fixture supplies no provider key;
+provider calls are verified separately during the authorized live cloud trial.
 
 Trial publication needs the same qualified image, scoped trial secrets,
 resource-owner checks, rollback or an immutable prior artifact, actual rollout
