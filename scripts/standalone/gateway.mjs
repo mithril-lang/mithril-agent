@@ -33,7 +33,7 @@ function run(cmd,args,{input,log,timeout=3600000}={}) {
 }
 const git=async (...args)=>(await run('git',args)).toString().trim();
 const privateFile=path=>{const s=statSync(path);if(!s.isFile()||s.uid!==process.getuid()||(s.mode&0o077))throw Error('Owner-only external file required');return readFileSync(path);};
-const recipeFiles=['Dockerfile','scripts/standalone/gateway.mjs','scripts/standalone/gateway-contract.mjs','scripts/standalone/gateway-image-probe.py','scripts/standalone/gateway-http-probe.py','scripts/standalone/gateway-test.Dockerfile'];
+const recipeFiles=['Dockerfile','scripts/standalone/gateway.mjs','scripts/standalone/gateway-contract.mjs','scripts/standalone/gateway-image-probe.py','scripts/standalone/gateway-http-probe.py','scripts/standalone/gateway-test.Dockerfile','scripts/standalone/gateway-trial.Dockerfile','scripts/standalone/gateway-trial-start.py'];
 const recipeDigest=digest({profile,files:recipeFiles.map(path=>[path,digest(readFileSync(join(root,path)).toString())])});
 let lockFd,lockPath;
 try {
@@ -80,7 +80,9 @@ try {
     await shell(`cd ${quote(source)}; python3 scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci --commit ${quote(sha)}; python3 scripts/ci/check_profile_archive_boundary.py`);
     stage='image-build';const image='mithril-agent-gateway:'+id;
     await docker('build','--platform',profile.platform,'--network','host','--label','org.opencontainers.image.revision='+sha,'-t',image,source);
-    imageId=(await docker('image','inspect','--format','{{.Id}}',image)).toString().trim();
+    const trialImage='mithril-agent-gateway-trial:'+id;
+    await docker('build','--network','host','-f',source+'/scripts/standalone/gateway-trial.Dockerfile','--build-arg','VERIFIED_IMAGE='+image,'-t',trialImage,source);
+    imageId=(await docker('image','inspect','--format','{{.Id}}',trialImage)).toString().trim();
     checks.push('image-build');
     stage='offline-regressions';testName='mithril-agent-gateway-test:'+id;
     await shell(`cp ${quote(source+'/.dockerignore')} ${quote(source+'/.dockerignore.runtime')}; printf '.git\n' > ${quote(source+'/.dockerignore')}`);
