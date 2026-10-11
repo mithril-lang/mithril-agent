@@ -21,6 +21,8 @@ class EncryptedStore:
     def __init__(self, store, key):
         self.store = store
         self.cipher = AESGCM(bytes.fromhex(key))
+        self.plaintext_digest = None
+        self.stored_digest = None
 
     def load(self):
         data, digest = self.store.load()
@@ -31,12 +33,19 @@ class EncryptedStore:
         if data.startswith(MAGIC):
             offset = len(MAGIC)
             data = self.cipher.decrypt(data[offset:offset + 12], data[offset + 12:], MAGIC)
+            self.plaintext_digest = hashlib.sha256(data).hexdigest()
+            self.stored_digest = digest
         # The first deployment migrates the previous non-secret trial archive.
         return data, hashlib.sha256(data).hexdigest()
 
     def save(self, data):
+        digest = hashlib.sha256(data).hexdigest()
+        if digest == self.plaintext_digest:
+            return self.stored_digest
         nonce = os.urandom(12)
-        return self.store.save(MAGIC + nonce + self.cipher.encrypt(nonce, data, MAGIC))
+        stored = self.store.save(MAGIC + nonce + self.cipher.encrypt(nonce, data, MAGIC))
+        self.plaintext_digest, self.stored_digest = digest, stored
+        return stored
 
 
 async def run(location):

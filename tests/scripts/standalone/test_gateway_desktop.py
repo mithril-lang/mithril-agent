@@ -25,6 +25,8 @@ def test_encrypted_profile_checkpoint_restores_independent_histories_and_credent
             db.execute('INSERT INTO messages VALUES (?)', (name + ' conversation',))
     store = desktop.EncryptedStore(desktop.persistence.Store(str(store_path), 'fixture'), 'ab' * 32)
     digest = store.save(desktop.persistence.snapshot(source, True))
+    assert store.save(desktop.persistence.snapshot(source, True)) == digest
+    assert len(list(store_path.glob('*.tar.gz'))) == 1
     encrypted = (store_path / (digest + '.tar.gz')).read_bytes()
     assert b'private-credential' not in encrypted
     data, restored_digest = store.load()

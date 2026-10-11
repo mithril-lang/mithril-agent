@@ -1,5 +1,5 @@
 """Single-writer trial proxy: restore before readiness, checkpoint before acknowledgement."""
-import argparse, hashlib, io, json, os, sqlite3, subprocess, tarfile, tempfile
+import argparse, gzip, hashlib, io, json, os, sqlite3, subprocess, tarfile, tempfile
 import threading, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,7 +24,7 @@ def allowed(name, include_secrets=False):
 
 def snapshot(home, include_secrets=False):
     out = io.BytesIO()
-    with tempfile.TemporaryDirectory() as temporary, tarfile.open(fileobj=out, mode='w:gz') as archive:
+    with tempfile.TemporaryDirectory() as temporary, gzip.GzipFile(fileobj=out, mode='wb', mtime=0) as compressed, tarfile.open(fileobj=compressed, mode='w') as archive:
         for source in sorted(home.rglob('*')):
             name = str(source.relative_to(home))
             if not allowed(name, include_secrets) or source.is_symlink() or not source.is_file() or any(p.is_symlink() for p in source.parents):
@@ -35,9 +35,17 @@ def snapshot(home, include_secrets=False):
                     db.backup(copy)
                     if copy.execute('PRAGMA integrity_check').fetchone() != ('ok',):
                         raise ValueError('Invalid SQLite checkpoint')
-                archive.add(target, arcname=name, recursive=False)
+                metadata = tarfile.TarInfo(name)
+                metadata.size = target.stat().st_size
+                metadata.mode = 0o600
+                with target.open('rb') as handle:
+                    archive.addfile(metadata, handle)
             else:
-                archive.add(source, arcname=name, recursive=False)
+                metadata = tarfile.TarInfo(name)
+                metadata.size = source.stat().st_size
+                metadata.mode = 0o600
+                with source.open('rb') as handle:
+                    archive.addfile(metadata, handle)
     data = out.getvalue()
     if len(data) > LIMIT:
         raise ValueError('Trial checkpoint exceeds limit')
