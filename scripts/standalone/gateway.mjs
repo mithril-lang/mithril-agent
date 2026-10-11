@@ -92,7 +92,7 @@ try {
     checks.push('offline-regressions');
     stage='image-runtime';volume='mithril-agent-gateway-volume-'+id;container='mithril-agent-gateway-'+id;
     await docker('volume','create',volume);
-    await docker('run','-d','--name',container,'--network','none','--cpus','2','--memory','4g','--pids-limit','256','--mount','type=volume,src='+volume+',dst=/opt/data','-e','API_SERVER_KEY=standalone-fixture-key-not-a-production-secret','-e','API_SERVER_HOST=127.0.0.1','-e','API_SERVER_PORT=7860',imageId,'gateway','run');
+    await docker('run','-d','--name',container,'--entrypoint','/opt/hermes/.venv/bin/hermes','--network','none','--cpus','2','--memory','4g','--pids-limit','256','--mount','type=volume,src='+volume+',dst=/opt/data','-e','API_SERVER_KEY=standalone-fixture-key-not-a-production-secret','-e','API_SERVER_HOST=127.0.0.1','-e','API_SERVER_PORT=7860',imageId,'gateway','run');
     const probe=readFileSync(join(root,'scripts/standalone/gateway-image-probe.py'));
     let ready=false;
     for(let n=0;n<60;n++){

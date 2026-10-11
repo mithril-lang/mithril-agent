@@ -66,3 +66,19 @@ resource-owner checks, rollback or an immutable prior artifact, actual rollout
 read-back and authenticated live inference. Integrated current main must be
 qualified again before production publication. A failed receipt, focused unit
 tests or a prototype Docker daemon is not an active release pipeline.
+
+## Cloud trial checkpoints
+
+The trial proxy restores a SHA-256 checked archive before readiness. SQLite stays
+on local disk; online backup includes committed WAL rows. Configuration, routing,
+trial bot state, cron, memories, skills and API idempotency state are checkpointed.
+Secrets, process locks and caches are excluded. Non-streaming API writes are
+checkpointed before acknowledgement; background changes are checkpointed every
+60 seconds. Missing mounts or invalid checkpoints fail startup closed. Store
+failures return 503. The single-writer trial does not prove exactly-once external
+side effects, streaming support or zero-loss background crash recovery.
+
+Cloudflare uses an authenticated HTTPS store. Spaces overrides the store argument
+with a private mounted bucket path. Offline runtime probes bypass cloud storage
+and test the underlying gateway on a disposable volume. Real proxy/store recovery
+is verified separately on both live platforms.
