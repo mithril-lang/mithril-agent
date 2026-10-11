@@ -94,3 +94,49 @@ async def test_release_ack_waits_for_restorable_fence_and_failed_storage_withhol
             pass
     await forward(persisted)
     assert delivered == [response]
+
+
+@pytest.mark.asyncio
+async def test_initial_gateway_reply_waits_for_identity_restoration_after_restart(tmp_path, monkeypatch):
+    import tui_gateway.server as server
+
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(server, '_hermes_home', str(home))
+    monkeypatch.setattr(server, '_sessions', {})
+    rpc = {'jsonrpc': '2.0', 'id': 2, 'method': 'profiles.handoff', 'params': {'action': 'gateway'}}
+    reply = server.handle_request(rpc)
+    identity = reply['result']['gateway']
+    store_path = tmp_path / 'store'
+    store_path.mkdir()
+    store = desktop.EncryptedStore(desktop.persistence.Store(str(store_path), 'fixture'), 'ab' * 32)
+    barrier = desktop.HandoffCheckpointBarrier()
+    request = json.dumps(rpc)
+    response = json.dumps(reply)
+    delivered = []
+
+    async def unavailable():
+        raise OSError('Identity checkpoint unavailable')
+
+    async def forward(checkpoint):
+        await barrier.observe(response, response=True, checkpoint=checkpoint)
+        delivered.append(response)
+
+    await barrier.observe(request, response=False, checkpoint=unavailable)
+    with pytest.raises(OSError):
+        await forward(unavailable)
+    assert delivered == []
+
+    async def persisted():
+        store.save(desktop.persistence.snapshot(home, True))
+        data, digest = store.load()
+        restored = tmp_path / 'restarted'
+        restored.mkdir()
+        desktop.persistence.restore(restored, data, digest, True)
+        monkeypatch.setenv('HERMES_HOME', str(restored))
+        monkeypatch.setattr(server, '_hermes_home', str(restored))
+        assert server.handle_request(rpc)['result']['gateway'] == identity
+
+    await forward(persisted)
+    assert delivered == [response]

@@ -32,7 +32,9 @@ class HandoffCheckpointBarrier:
             if not isinstance(frame, dict) or not isinstance(frame.get('id'), (str, int)):
                 continue
             params = frame.get('params')
-            if not response and frame.get('method') == 'profiles.handoff' and isinstance(params, dict) and params.get('action') not in {'gateway', 'status'}:
+            # Initial gateway discovery creates its durable identity. A source
+            # may freeze against that ID as soon as this reply is delivered.
+            if not response and frame.get('method') == 'profiles.handoff' and isinstance(params, dict) and params.get('action') != 'status':
                 self.pending.add(frame['id'])
             elif response and frame.get('id') in self.pending:
                 await checkpoint()
