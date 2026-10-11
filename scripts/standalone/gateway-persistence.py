@@ -57,7 +57,7 @@ class Store:
         self.location, self.key = location, key
 
     def request(self, data=None):
-        headers = {'Authorization': 'Bearer ' + self.key}
+        headers = {'Authorization': 'Bearer ' + self.key, 'User-Agent': 'Hermes-Gateway-Trial/1.0'}
         if data is not None:
             headers['X-Checkpoint-SHA256'] = hashlib.sha256(data).hexdigest()
         req = urllib.request.Request(self.location, headers=headers, data=data, method='GET' if data is None else 'PUT')

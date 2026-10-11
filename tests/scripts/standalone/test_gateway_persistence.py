@@ -58,3 +58,26 @@ def test_archive_traversal_and_symlinks_rejected(tmp_path):
 def test_missing_volume_fails_closed(tmp_path):
     with pytest.raises(ValueError, match='missing'):
         persistence.Store(str(tmp_path / 'missing'), 'fixture').load()
+
+
+def test_authenticated_http_checkpoint_transport(tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    received = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_PUT(self):
+            assert self.headers['Authorization'] == 'Bearer fixture'
+            assert self.headers['User-Agent'] == 'Hermes-Gateway-Trial/1.0'
+            body = self.rfile.read(int(self.headers['Content-Length']))
+            assert self.headers['X-Checkpoint-SHA256'] == hashlib.sha256(body).hexdigest()
+            received.append(body)
+            self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        persistence.Store('http://127.0.0.1:' + str(server.server_port), 'fixture').request(b'checkpoint')
+        assert received == [b'checkpoint']
+    finally:
+        server.shutdown(); server.server_close()
