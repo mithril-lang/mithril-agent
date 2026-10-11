@@ -109,6 +109,8 @@ async def run(location):
                 await checkpoint()
 
         async def handler(request):
+            if request.path == '/' and request.method in {'GET', 'HEAD'}:
+                return web.Response(text='Hermes Desktop gateway is running. Connect with the dedicated session token.', content_type='text/plain')
             if request.path == '/health':
                 return web.json_response({'ready': all(child.returncode is None for child in children)}, status=200 if all(child.returncode is None for child in children) else 503)
             desktop = request.path.startswith('/api/')
