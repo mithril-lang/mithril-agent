@@ -5,11 +5,45 @@ onto server.py, so they must not collide with its globals.
 """
 
 import contextlib
+import threading
 
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+
+_handoff_runtime_lock = threading.RLock()
+_handoff_runtime_owners = {}
+
+
+@contextlib.contextmanager
+def _profile_handoff_runtime(home):
+    """Reopen cached stores after a roundtrip, including named pooled backends."""
+    from hermes_cli.profile_handoff import _read, HandoffError
+    from hermes_state_registry import close_all_under
+    global _db, _db_error
+    record = _read(home)
+    if record is None:
+        yield
+        return
+    key = str(home.resolve())
+    owner = (record["identity"], record["generation"])
+    with _handoff_runtime_lock:
+        previous = _handoff_runtime_owners.get(key)
+        if previous is not None and previous != owner:
+            with _sessions_lock:
+                owned = [(sid, session) for sid, session in _sessions.items()
+                         if Path(session.get("profile_home") or _hermes_home).resolve() == home.resolve()]
+                if any(session.get("running") or (session.get("_agent_build_thread") is not None and session["_agent_build_thread"].is_alive()) for _, session in owned):
+                    raise HandoffError("An earlier profile runtime has not finished retiring")
+                popped = [_pop_session_by_id(sid) for sid, _ in owned]
+            for session in popped:
+                _teardown_popped_session(session, end_reason="profile_handoff_generation")
+            close_all_under(home)
+            if home.resolve() == _launch_home().resolve():
+                _db, _db_error = None, None
+        _handoff_runtime_owners[key] = owner
+        yield
 
 # ext -> mime; iteration order is the on-disk lookup order for assets.
 _ASSET_EXTS = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
@@ -28,6 +62,81 @@ def _profile_handler(name: str, code: int):
                 return _err(rid, code, str(e))
         return method(name)(handler)
     return deco
+
+
+@_profile_handler("profiles.handoff", 4068)
+def _profile_handoff(rid, params):
+    from hermes_cli import profile_handoff as handoff
+    from hermes_cli.profiles import get_profile_dir
+    from utils import atomic_json_write
+    import uuid
+    action = params["action"]
+    # Management runs on the default gateway, never a pooled profile backend
+    # whose launch DB or cached runtime would survive a directory replacement.
+    root = _launch_home()
+    if root.parent.name == "profiles":
+        raise handoff.HandoffError("Use the default gateway for profile handoff management")
+    gateway_path = root / ".execution-gateway.json"
+    # The cloud user owns root (/opt/data), not its parent (/opt).
+    with handoff._lock(root / ".execution-gateway", exclusive=True):
+        if not gateway_path.exists():
+            atomic_json_write(gateway_path, {"id": uuid.uuid4().hex}, mode=0o600, fsync_dir=True)
+        gateway_id = json.loads(gateway_path.read_text())["id"]
+    if action == "gateway":
+        return _ok(rid, {"gateway": gateway_id})
+    name = str(params.get("name") or "")
+    if not name.startswith("handoff-trial-"):
+        raise handoff.HandoffError("Only handoff-trial-* named profiles are eligible")
+    home = Path(get_profile_dir(name))
+    if home.is_symlink() or home.parent.is_symlink():
+        raise handoff.HandoffError("Linked profile homes are not eligible for handoff")
+    if action != "stage" and not home.is_dir():
+        raise handoff.HandoffError("Trial profile does not exist")
+    # Refuse migration while any runtime (including a deferred build) owns the
+    # profile. The client closes its chat first; other clients must do so too.
+    if action not in {"status", "activate", "release", "freeze"}:
+        with _sessions_lock:
+            if any(Path(s.get("profile_home") or _hermes_home).resolve() == home.resolve() for s in _sessions.values()):
+                raise handoff.HandoffError("Close all chats for this profile before moving it")
+    if action == "status":
+        result = handoff.status(home)
+    elif action == "enroll":
+        result = handoff.enroll(home)
+    elif action == "freeze":
+        def quiesce():
+            from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, notify_multiplexer_profiles_changed
+            if live_default_gateway_pid() is not None:
+                served = notify_multiplexer_profiles_changed(name)
+                if served is None or name in served:
+                    raise handoff.HandoffError("Gateway did not confirm retiring this profile's adapters and cached agents")
+            with _sessions_lock:
+                owned = [(sid, s) for sid, s in _sessions.items() if Path(s.get("profile_home") or _hermes_home).resolve() == home.resolve()]
+                if any(s.get("running") or (s.get("_agent_build_thread") is not None and s["_agent_build_thread"].is_alive()) for _, s in owned):
+                    raise handoff.HandoffError("Finish the active turn or agent build before moving")
+                popped = [_pop_session_by_id(sid) for sid, _ in owned]
+            for session in popped:
+                _teardown_popped_session(session, end_reason="profile_handoff")
+            from hermes_state_registry import close_all_under
+            close_all_under(home)
+        result = handoff.freeze(home, params["operation"], params["target"], quiesce=quiesce)
+    elif action == "export":
+        result = {"capsule": handoff.export(home, params["operation"], params["encryption_key"])}
+    elif action == "stage":
+        from hermes_state_registry import close_all_under
+        close_all_under(home)
+        result = handoff.stage(home, params["capsule"], gateway_id, params["encryption_key"])
+    elif action == "release":
+        result = {"proof": handoff.release(home, params["operation"], params["sha256"])}
+    elif action == "activate":
+        result = handoff.activate(home, params["operation"], params["proof"])
+        from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, notify_multiplexer_profiles_changed
+        if live_default_gateway_pid() is not None:
+            served = notify_multiplexer_profiles_changed(name)
+            if served is None or name not in served:
+                raise handoff.HandoffError("Ownership is active but the gateway did not confirm serving it; retry activation")
+    else:
+        raise handoff.HandoffError("Unknown handoff action")
+    return _ok(rid, result)
 
 
 def _lazy(module, name):

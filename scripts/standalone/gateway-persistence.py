@@ -4,8 +4,8 @@ import threading, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ROOT_FILES = {'config.yaml', 'profile.yaml', 'SOUL.md', 'active_profile', 'state.db', 'bot-state.json', 'standalone-restart-proof.sqlite', 'standalone-restart-proof.json', 'runs_idempotency.db'}
-ROOT_DIRS = {'sessions', 'cron', 'memories', 'skills'}
+ROOT_FILES = {'config.yaml', 'profile.yaml', 'SOUL.md', 'desktop.json', 'active_profile', 'state.db', 'bot-state.json', 'standalone-restart-proof.sqlite', 'standalone-restart-proof.json', 'runs_idempotency.db', '.execution-handoff.json', '.execution-gateway.json'}
+ROOT_DIRS = {'sessions', 'cron', 'memories', 'skills', 'assets'}
 LIMIT = 32 * 1024 * 1024
 
 

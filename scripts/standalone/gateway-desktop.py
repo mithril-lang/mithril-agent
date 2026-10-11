@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import importlib.util
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -15,6 +16,27 @@ spec = importlib.util.spec_from_file_location('persistence', Path(__file__).with
 persistence = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(persistence)
 MAGIC = b'HERMES-ENCRYPTED-V1\0'
+
+
+class HandoffCheckpointBarrier:
+    """Gate transfer replies on durable encrypted storage, including retry replies."""
+    def __init__(self):
+        self.pending = set()
+
+    async def observe(self, data, *, response, checkpoint):
+        for line in data.splitlines():
+            try:
+                frame = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(frame, dict) or not isinstance(frame.get('id'), (str, int)):
+                continue
+            params = frame.get('params')
+            if not response and frame.get('method') == 'profiles.handoff' and isinstance(params, dict) and params.get('action') not in {'gateway', 'status'}:
+                self.pending.add(frame['id'])
+            elif response and frame.get('id') in self.pending:
+                await checkpoint()
+                self.pending.discard(frame['id'])
 
 
 class EncryptedStore:
@@ -132,10 +154,12 @@ async def run(location):
                 remote = await client.ws_connect(target, headers=headers, timeout=180)
                 local = web.WebSocketResponse()
                 await local.prepare(request)
+                handoffs = HandoffCheckpointBarrier()
 
                 async def relay(source, destination):
                     async for message in source:
                         if message.type == WSMsgType.TEXT:
+                            await handoffs.observe(message.data, response=source is remote, checkpoint=checkpoint)
                             await destination.send_str(message.data)
                         elif message.type == WSMsgType.BINARY:
                             await destination.send_bytes(message.data)

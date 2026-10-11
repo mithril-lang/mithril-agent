@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
 
@@ -52,3 +53,44 @@ def test_wrong_key_and_ciphertext_tampering_refuse_restore(tmp_path):
     store.save(data[:-1] + bytes([data[-1] ^ 1]))
     with pytest.raises(Exception):
         desktop.EncryptedStore(store, 'ab' * 32).load()
+
+
+@pytest.mark.asyncio
+async def test_release_ack_waits_for_restorable_fence_and_failed_storage_withholds_proof(tmp_path):
+    from hermes_cli import profile_handoff as handoff
+    import uuid
+    source = tmp_path / 'source'
+    trial = source / 'profiles' / 'handoff-trial-checkpoint'
+    trial.mkdir(parents=True)
+    handoff.enroll(trial)
+    operation, target = uuid.uuid4().hex, uuid.uuid4().hex
+    handoff.freeze(trial, operation, target)
+    capsule = handoff.export(trial, operation, 'ab' * 32)
+    proof = handoff.release(trial, operation, capsule['sha256'])
+    store_path = tmp_path / 'store'
+    store_path.mkdir()
+    store = desktop.EncryptedStore(desktop.persistence.Store(str(store_path), 'fixture'), 'cd' * 32)
+    barrier = desktop.HandoffCheckpointBarrier()
+    request = json.dumps({'id': 1, 'method': 'profiles.handoff', 'params': {'action': 'release'}})
+    # The backend can coalesce a notification and reply into one NDJSON frame.
+    response = json.dumps({'method': 'event', 'params': {'type': 'idle'}}) + '\n' + json.dumps({'id': 1, 'result': {'proof': proof}})
+    async def unavailable():
+        raise OSError('Checkpoint storage unavailable')
+    await barrier.observe(request, response=False, checkpoint=unavailable)
+    delivered = []
+    async def forward(checkpoint):
+        await barrier.observe(response, response=True, checkpoint=checkpoint)
+        delivered.append(response)
+    with pytest.raises(OSError):
+        await forward(unavailable)
+    assert delivered == []
+    async def persisted():
+        store.save(desktop.persistence.snapshot(source, True))
+        data, digest = store.load()
+        restored = tmp_path / 'restarted'
+        restored.mkdir()
+        desktop.persistence.restore(restored, data, digest, True)
+        with pytest.raises(handoff.HandoffError), handoff.execution(restored / 'profiles' / trial.name):
+            pass
+    await forward(persisted)
+    assert delivered == [response]

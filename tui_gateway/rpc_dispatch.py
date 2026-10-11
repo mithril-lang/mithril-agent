@@ -31,9 +31,27 @@ def _handle_admitted_request(req: dict) -> dict | None:
             return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        response = fn(rid, params)
+        from hermes_cli.profile_handoff import execution, HandoffError
+        from hermes_cli.profiles import get_profile_dir
+        import contextlib
+        session = _sessions.get(str(params.get("session_id") or ""))
+        name = params.get("profile")
+        if method.startswith("profiles.") and params.get("name"):
+            name = params["name"]
+        try:
+            home = (Path(session.get("profile_home") or _hermes_home) if session else
+                    Path(get_profile_dir(name)) if name and name != "default" else _launch_home())
+        except (ValueError, FileNotFoundError) as exc:
+            return _err(rid, 4064, str(exc))
+        admission = contextlib.nullcontext() if method == "profiles.handoff" else execution(home)
+        with admission:
+            runtime = contextlib.nullcontext() if method == "profiles.handoff" else _profile_handoff_runtime(home)
+            with runtime:
+                response = fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
+    except HandoffError as exc:
+        return _err(rid, 4068, str(exc))
     finally:
         _current_rpc_method.reset(token)
     if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):

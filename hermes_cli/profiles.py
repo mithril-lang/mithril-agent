@@ -41,6 +41,7 @@ _CLONE_SUBDIR_FILES = ["memories/MEMORY.md", "memories/USER.md"]
 # Runtime files stripped after --clone-all. A post-copy step rather than an ignore filter
 # because they are created dynamically and may be absent at copy time.
 _CLONE_ALL_STRIP: list[str] = [
+    ".execution-handoff.json", ".execution-gateway.json",
     "gateway.pid", "gateway_state.json", "processes.json",
     # Bot Desktop runtime identity: pid + create_time of the SOURCE's launcher, its DISPLAY/XAUTHORITY and
     # lease. Copied verbatim, `screen stop` on the clone would kill the source's X server. Browser user data
@@ -112,7 +113,7 @@ def _non_exportable_entries(directory: str, contents: list) -> set:
     ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
     ignored: set = set()
     for entry in contents:
-        if entry == "__pycache__" or entry.endswith((".sock", ".tmp", ".pyc", ".pyo")):
+        if entry in {"__pycache__", ".execution-handoff.json", ".execution-gateway.json", ".execution-handoff-locks"} or entry.endswith((".sock", ".tmp", ".pyc", ".pyo")):
             ignored.add(entry)
             continue
         try:
@@ -1087,6 +1088,15 @@ def parked_marker_path(home: Path) -> Path:
 
 def profile_is_parked(home: Path) -> bool:
     """Marker contents are deliberately irrelevant, including for provisioning."""
+    from hermes_cli.profile_handoff import STATE, status
+    if (Path(home) / STATE).exists():
+        try:
+            if status(Path(home))["phase"] != "active":
+                return True
+        except Exception:
+            # A damaged owner journal must never resurrect an old API adapter,
+            # cron ticker or cached agent at container restart.
+            return True
     return parked_marker_path(home).exists()
 
 
@@ -2244,6 +2254,9 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         # Remove foreign runtime state before publishing, including file-shaped roots.
         # A failed removal must abort import rather than install a stale PM selection.
         for child in final_source.iterdir():
+            if child.name in {".execution-handoff.json", ".execution-gateway.json"}:
+                child.unlink()
+                continue
             if child.name in PM_RUNTIME_ROOT_DIRS:
                 if child.is_dir():
                     shutil.rmtree(child)

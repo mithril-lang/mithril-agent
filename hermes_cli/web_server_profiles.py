@@ -312,7 +312,8 @@ def _config_profile_scope(profile: Optional[str]):
         # concurrent first ``?profile=B`` request flips ``get_secret`` to fail closed mid-request,
         # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
         secrets = launch_secret_scope(process_home)
-    with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
+    from hermes_cli.profile_handoff import execution
+    with execution(profile_dir or process_home), (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
         token = set_secret_scope(secrets, profile_home=str(profile_dir or process_home))
         try:
             yield scoped

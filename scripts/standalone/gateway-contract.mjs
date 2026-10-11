@@ -5,7 +5,7 @@ export const profile = Object.freeze({
   coverage: ['repository Dockerfile', 'offline API gateway regression suite', 'real image provenance, SQLite, privilege drop and restart'],
   excluded: ['native Desktop and installers', 'messaging adapter delivery', 'other architectures', 'live inference', 'production publication'],
   minimumFreeBytes: 12 * 1024 ** 3,
-  offlineTests: ['tests/gateway/test_api_server*.py', 'tests/gateway/test_multiplex_api_server_routing.py', 'tests/gateway/test_config.py', 'tests/gateway/test_custom_provider_request_overrides.py', 'tests/hermes_cli/test_container_boot.py', 'tests/hermes_cli/test_gateway_external_supervisor.py'],
+  offlineTests: ['tests/hermes_cli/test_profile_handoff.py', 'tests/tui_gateway/test_profile_handoff.py', 'tests/tui_gateway/contracts/test_generated.py', 'tests/gateway/test_api_server*.py', 'tests/gateway/test_multiplex_api_server_routing.py', 'tests/gateway/test_config.py', 'tests/gateway/test_custom_provider_request_overrides.py', 'tests/hermes_cli/test_container_boot.py', 'tests/hermes_cli/test_gateway_external_supervisor.py'],
 });
 export const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 export function seal(receipt, key) {

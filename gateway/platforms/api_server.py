@@ -1725,19 +1725,24 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             profile = self._resolve_request_profile(request)
             if profile is _PROFILE_REJECTED:
                 return web.json_response({"error": "Unknown or unconfigured profile"}, status=404)
+            from hermes_cli.profile_handoff import execution, HandoffError
+            from hermes_constants import get_hermes_home
             token = _api_request_profile.set(profile)
             try:
                 with self._profile_scope(profile):
-                    resolved_profile = profile or "default"
-                    principal_token = _api_request_browser_control_principal.set(
-                        self._derive_browser_control_principal(resolved_profile))
-                    family_token = _api_request_browser_control_transport_family.set(
-                        self._browser_control_transport_family(request))
-                    try:
-                        return await handler(request)
-                    finally:
-                        _api_request_browser_control_transport_family.reset(family_token)
-                        _api_request_browser_control_principal.reset(principal_token)
+                    with execution(get_hermes_home()):
+                        resolved_profile = profile or "default"
+                        principal_token = _api_request_browser_control_principal.set(
+                            self._derive_browser_control_principal(resolved_profile))
+                        family_token = _api_request_browser_control_transport_family.set(
+                            self._browser_control_transport_family(request))
+                        try:
+                            return await handler(request)
+                        finally:
+                            _api_request_browser_control_transport_family.reset(family_token)
+                            _api_request_browser_control_principal.reset(principal_token)
+            except HandoffError:
+                return web.json_response({'error': 'Profile execution is disabled on this gateway'}, status=409)
             finally:
                 _api_request_profile.reset(token)
         return profile_prefix_middleware
