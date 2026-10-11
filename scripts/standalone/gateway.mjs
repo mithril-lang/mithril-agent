@@ -77,7 +77,7 @@ try {
     if(!/^\/(?:tmp|dev\/shm)\/mithril-agent-ci\.[A-Za-z0-9]+$/.test(source))throw Error('Unexpected scratch directory');
     const archive=await run('git',['archive','--format=tar.gz',sha]);
     await shell(`tar -xz -C ${quote(source)}`,archive);
-    await shell(`cd ${quote(source)}; python3 scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci --commit ${quote(sha)}; python3 scripts/ci/check_profile_archive_boundary.py`);
+    await shell(`cd ${quote(source)}; python3 -B scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci --commit ${quote(sha)}; python3 -B scripts/ci/check_profile_archive_boundary.py`);
     stage='image-build';const image='mithril-agent-gateway:'+id;
     await docker('build','--platform',profile.platform,'--network','host','--label','org.opencontainers.image.revision='+sha,'-t',image,source);
     const trialImage='mithril-agent-gateway-trial:'+id;
