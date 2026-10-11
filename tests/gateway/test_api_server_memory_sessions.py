@@ -41,3 +41,29 @@ def test_manager_survives_across_requests_and_is_exclusive_per_home(monkeypatch)
     assert registry.checkout("sess-1") is None
     home[0] = "home-a"
     assert registry.checkout("sess-1") is loser
+
+
+def test_handoff_retires_only_the_matching_profile_and_refuses_unfinished_memory(tmp_path, monkeypatch):
+    from pathlib import Path
+    from hermes_cli.profile_handoff import HandoffError
+    import pytest
+    registry = ApiServerMemorySessions(max_size=8, idle_ttl_secs=3600.0)
+    homes = [tmp_path / 'first', tmp_path / 'second']
+    for home in homes:
+        home.mkdir()
+    selected = [homes[0]]
+    monkeypatch.setattr(ApiServerMemorySessions, '_owner_home', staticmethod(lambda: (str(selected[0].resolve()), Path(selected[0]))))
+    first, second = _Manager(), _Manager()
+    registry.checkin(_agent(first))
+    selected[0] = homes[1]
+    registry.checkin(_agent(second))
+    monkeypatch.setattr(first, 'flush_pending', lambda timeout=None: False)
+    with pytest.raises(HandoffError, match='did not finish'):
+        registry.close_profile(homes[0])
+    assert not first.shut_down and not second.shut_down
+    monkeypatch.setattr(first, 'flush_pending', lambda timeout=None: True)
+    registry.close_profile(homes[0])
+    assert first.shut_down and not second.shut_down
+    assert registry.checkout('sess-1') is second
+    selected[0] = homes[0]
+    assert registry.checkout('sess-1') is None

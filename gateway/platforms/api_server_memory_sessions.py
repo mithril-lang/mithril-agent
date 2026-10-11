@@ -104,6 +104,23 @@ class ApiServerMemorySessions:
         for mgr, owner, _ in entries:
             self._shutdown(mgr, owner)
 
+    def close_profile(self, home: Path) -> None:
+        """Handoff drain: retire only this profile, and refuse incomplete writes."""
+        from hermes_constants import hermes_home_key
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.profile_handoff import HandoffError
+        key_home = hermes_home_key(home)
+        with self._lock:
+            entries = [(key, entry) for key, entry in self._entries.items() if key[0] == key_home]
+        with _profile_runtime_scope(home, hydrate_secrets=False):
+            for key, (manager, _owner, _last_used) in entries:
+                if manager.flush_pending(timeout=10) is not True:
+                    raise HandoffError("Profile memory writes did not finish; refuse handoff")
+                manager.shutdown_all()
+                with self._lock:
+                    if self._entries.get(key, (None,))[0] is manager:
+                        self._entries.pop(key, None)
+
     # -- teardown -------------------------------------------------------------------------------
 
     def _shutdown_async(self, manager: Any, owner: Optional[Path]) -> None:

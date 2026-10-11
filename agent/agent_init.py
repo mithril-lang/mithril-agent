@@ -39,6 +39,7 @@ from agent.tool_guardrails import (
 )
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
+from hermes_cli.profile_handoff import execution_turn
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
@@ -2367,6 +2368,7 @@ _CALLBACK_PARAMS = (
 )
 
 
+@execution_turn
 def init_agent(
     agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
     acp_command: str = None, acp_args: list[str] | None = None, command: str = None,

@@ -2491,6 +2491,24 @@
       }
     },
     {
+      "name": "profiles.handoff",
+      "summary": "Move an idle enrolled named API trial profile with a durable execution fence.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/HandoffParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/HandoffResult"
+        }
+      }
+    },
+    {
       "name": "profiles.list",
       "summary": "Roster of profiles with previews so a client paints without N follow-up calls.",
       "params": [
@@ -15564,6 +15582,55 @@
         "title": "GroupsStopResult",
         "type": "object"
       },
+      "HandoffCapsule": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_name": {
+            "title": "Profile Name",
+            "type": "string"
+          },
+          "identity": {
+            "title": "Identity",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "release_hash": {
+            "title": "Release Hash",
+            "type": "string"
+          },
+          "archive": {
+            "title": "Archive",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_name",
+          "identity",
+          "generation",
+          "operation",
+          "target",
+          "sha256",
+          "release_hash",
+          "archive"
+        ],
+        "title": "HandoffCapsule",
+        "type": "object"
+      },
       "HandoffFailParams": {
         "additionalProperties": false,
         "properties": {
@@ -15620,6 +15687,125 @@
           "state"
         ],
         "title": "HandoffFailResult",
+        "type": "object"
+      },
+      "HandoffParams": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "gateway",
+              "status",
+              "enroll",
+              "freeze",
+              "export",
+              "stage",
+              "release",
+              "activate"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operation"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sha256"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proof"
+          },
+          "encryption_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Encryption Key"
+          },
+          "capsule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HandoffCapsule"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "HandoffParams",
         "type": "object"
       },
       "HandoffRequestParams": {
@@ -15680,6 +15866,127 @@
           "home_name"
         ],
         "title": "HandoffRequestResult",
+        "type": "object"
+      },
+      "HandoffResult": {
+        "additionalProperties": false,
+        "properties": {
+          "phase": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unmanaged",
+                  "active",
+                  "frozen",
+                  "moved",
+                  "staged"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Phase"
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Identity"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operation"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sha256"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "gateway": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Gateway"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proof"
+          },
+          "capsule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HandoffCapsule"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "HandoffResult",
         "type": "object"
       },
       "HandoffStateResult": {

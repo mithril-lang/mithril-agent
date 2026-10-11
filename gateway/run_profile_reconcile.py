@@ -234,6 +234,15 @@ class GatewayProfileReconcileMixin:
             for platform, adapter in list(adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform, profile=name)
             # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
+            from hermes_cli.profile_handoff import STATE
+            if (home / STATE).exists():
+                # The shared API listener survives a named profile's retirement.
+                # Its per-profile memory managers must not survive a return
+                # migration and keep handles into the retained, stale database.
+                for adapter in self.adapters.values():
+                    registry = getattr(adapter, "_memory_sessions", None)
+                    if registry is not None:
+                        await asyncio.to_thread(registry.close_profile, home)
             _write_runtime_status_quiet(drop_profile_platforms=name)
             for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
                          "_busy_text_timing_by_profile", "_human_delay_by_profile", "_profile_configs"):

@@ -1824,6 +1824,38 @@ export interface ClientCapabilitiesParams {
 export interface ClientCapabilitiesResult {
   server_requests: string[]
 }
+export interface HandoffParams {
+  action: 'gateway' | 'status' | 'enroll' | 'freeze' | 'export' | 'stage' | 'release' | 'activate'
+  name?: string | null
+  profile?: string | null
+  operation?: string | null
+  target?: string | null
+  sha256?: string | null
+  proof?: string | null
+  encryption_key?: string | null
+  capsule?: HandoffCapsule | null
+}
+export interface HandoffCapsule {
+  profile_name: string
+  identity: string
+  generation: number
+  operation: string
+  target: string
+  sha256: string
+  release_hash: string
+  archive: string
+}
+export interface HandoffResult {
+  phase?: 'unmanaged' | 'active' | 'frozen' | 'moved' | 'staged' | null
+  identity?: string | null
+  generation?: number | null
+  operation?: string | null
+  sha256?: string | null
+  target?: string | null
+  gateway?: string | null
+  proof?: string | null
+  capsule?: HandoffCapsule | null
+}
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
   profile?: string | null
@@ -5130,6 +5162,8 @@ export interface RpcMethods {
   'profiles.describe': { params: ProfileNameParams; result: ProfilesDescribeResult }
   /** A profile asset as a data URL. */
   'profiles.get_asset': { params: ProfilesGetAssetParams; result: ProfilesGetAssetResult }
+  /** Move an idle enrolled named API trial profile with a durable execution fence. */
+  'profiles.handoff': { params: HandoffParams; result: HandoffResult }
   /** Roster of profiles with previews so a client paints without N follow-up calls. */
   'profiles.list': { params: ProfilesListParams; result: ProfilesListResult }
   /** Write the onboarding facts into the default profile's user memory and confirm they landed. */
@@ -5497,6 +5531,7 @@ export const RPC_METHODS = [
   'profiles.create',
   'profiles.describe',
   'profiles.get_asset',
+  'profiles.handoff',
   'profiles.list',
   'profiles.remember_onboarding',
   'profiles.set_asset',

@@ -35,6 +35,15 @@ import { useMemo } from 'react'
 import { getPluginCtx } from './shared'
 
 type BotsMessages = {
+  handoff: {
+    gateway: string
+    destination: string
+    hint: string
+    move: string
+    moving: string
+    moved: string
+    failed: string
+  }
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string
@@ -484,6 +493,15 @@ type BotsMessages = {
 }
 
 const en: BotsMessages = {
+  handoff: {
+    gateway: 'Execution gateway',
+    destination: 'Choose a destination',
+    hint: 'Move this API trial profile with its settings and latest history. Finish any active turn first. Retry the same destination if interrupted.',
+    move: 'Move profile',
+    moving: 'Moving profile…',
+    moved: 'Profile moved. Settings and history are preserved; the old gateway is fenced.',
+    failed: 'Profile move failed. Retry with the same destination to resume safely.'
+  },
   editor: {
     fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
     liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',
@@ -920,6 +938,15 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  handoff: {
+    gateway: '実行先ゲートウェイ',
+    destination: '移行先を選択',
+    hint: 'この API 試験用プロファイルの設定と最新の履歴を移行します。実行中の会話を完了してから移行してください。中断した場合は同じ移行先で再試行できます。',
+    move: 'プロファイルを移行',
+    moving: '移行中…',
+    moved: 'プロファイルを移行しました。設定と履歴を保持し、旧ゲートウェイの実行を停止しました。',
+    failed: '移行に失敗しました。同じ移行先で再試行すると安全に再開できます。'
+  },
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
     liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',
@@ -1360,6 +1387,15 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  handoff: {
+    gateway: '执行网关',
+    destination: '选择目标',
+    hint: '迁移此 API 测试配置档案的设置和最新历史。请先完成正在进行的对话。中断后可重试同一目标。',
+    move: '迁移配置档案',
+    moving: '正在迁移…',
+    moved: '配置档案已迁移。设置和历史已保留，旧网关的执行已停止。',
+    failed: '迁移失败。请重试同一目标以安全恢复。'
+  },
   editor: {
     fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1784,6 +1820,15 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  handoff: {
+    gateway: '執行閘道',
+    destination: '選擇目標',
+    hint: '移轉此 API 測試設定檔的設定和最新歷史。請先完成正在進行的對話。中斷後可重試相同目標。',
+    move: '移轉設定檔',
+    moving: '正在移轉…',
+    moved: '設定檔已移轉。設定和歷史已保留，舊閘道的執行已停止。',
+    failed: '移轉失敗。請重試相同目標以安全恢復。'
+  },
   editor: {
     fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',

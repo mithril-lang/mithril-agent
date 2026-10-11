@@ -28,6 +28,7 @@ import { labeled } from './dialog-parts'
 import { useBots } from './i18n'
 import { displayName } from './labels'
 import { AdvancedProfileConfig, applyAdvancedConfig, emptyAdvancedState } from './profile-config'
+import { ProfileHandoffControl } from './profile-handoff-control'
 import { botRosterMeta, requestForBot } from './routing'
 import type { AvatarAppearance, RosterRow } from './types'
 
@@ -243,6 +244,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
             </div>
           ) : null}
         </div>
+        <ProfileHandoffControl bot={bot} onComplete={onClose} />
         <DialogFooter>
           <Button disabled={busy} onClick={onClose} variant="ghost">
             {t.common.cancel}
