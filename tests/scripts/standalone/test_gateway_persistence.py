@@ -36,12 +36,14 @@ def test_wal_database_routing_and_bot_state_restore_to_new_home(tmp_path):
 
 
 def test_corrupt_checkpoint_fails_before_writing(tmp_path):
+    tmp_path = tmp_path / 'restore'; tmp_path.mkdir()
     with pytest.raises(ValueError, match='digest'):
         persistence.restore(tmp_path, b'corrupt', '0' * 64)
     assert list(tmp_path.iterdir()) == []
 
 
 def test_archive_traversal_and_symlinks_rejected(tmp_path):
+    tmp_path = tmp_path / 'restore'; tmp_path.mkdir()
     for name, kind in [('../config.yaml', tarfile.REGTYPE), ('sessions/link', tarfile.SYMTYPE)]:
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode='w:gz') as archive:

@@ -33,7 +33,7 @@ function run(cmd,args,{input,log,timeout=3600000}={}) {
 }
 const git=async (...args)=>(await run('git',args)).toString().trim();
 const privateFile=path=>{const s=statSync(path);if(!s.isFile()||s.uid!==process.getuid()||(s.mode&0o077))throw Error('Owner-only external file required');return readFileSync(path);};
-const recipeFiles=['Dockerfile','scripts/standalone/gateway.mjs','scripts/standalone/gateway-contract.mjs','scripts/standalone/gateway-image-probe.py','scripts/standalone/gateway-http-probe.py','scripts/standalone/gateway-test.Dockerfile','scripts/standalone/gateway-trial.Dockerfile','scripts/standalone/gateway-trial-start.py'];
+const recipeFiles=['Dockerfile','scripts/standalone/gateway.mjs','scripts/standalone/gateway-contract.mjs','scripts/standalone/gateway-image-probe.py','scripts/standalone/gateway-http-probe.py','scripts/standalone/gateway-test.Dockerfile','scripts/standalone/gateway-trial.Dockerfile','scripts/standalone/gateway-trial-start.py','scripts/standalone/gateway-persistence.py'];
 const recipeDigest=digest({profile,files:recipeFiles.map(path=>[path,digest(readFileSync(join(root,path)).toString())])});
 let lockFd,lockPath;
 try {
