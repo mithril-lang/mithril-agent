@@ -82,3 +82,14 @@ Cloudflare uses an authenticated HTTPS store. Spaces overrides the store argumen
 with a private mounted bucket path. Offline runtime probes bypass cloud storage
 and test the underlying gateway on a disposable volume. Real proxy/store recovery
 is verified separately on both live platforms.
+
+### Shared-profile checkpoint regression
+
+`tests/scripts/standalone/test_gateway_persistence.py` also exercises the native
+`SessionDB` in a default home and two named profile homes with the same durable
+session ID. It checkpoints while the WAL databases remain open and checks the
+restored message rows, usage counters, profile model, full-text search, memory,
+SOUL and config independently. Ordinary checkpoints omit each profile's `.env`.
+This covers native local database/file roundtrips, not member authorization,
+hostile shell isolation, shared browser state, running-turn crash recovery,
+real provider communication or cloud runtime capacity.

@@ -60,6 +60,63 @@ def test_missing_volume_fails_closed(tmp_path):
         persistence.Store(str(tmp_path / 'missing'), 'fixture').load()
 
 
+def test_shared_gateway_restores_native_profile_databases_without_merging(tmp_path):
+    """A shared checkpoint preserves each native store even when session IDs collide."""
+    from contextlib import ExitStack
+    from hermes_state import SessionDB
+
+    source = tmp_path / 'source'
+    destination = tmp_path / 'restored'
+    source.mkdir()
+    destination.mkdir()
+    homes = [Path('.'), Path('profiles/alpha'), Path('profiles/bravo')]
+    session_id = 'same-durable-session'
+    expected = {}
+    with ExitStack() as handles:
+        for index, relative in enumerate(homes):
+            home = source / relative
+            home.mkdir(parents=True, exist_ok=True)
+            db = SessionDB(home / 'state.db')
+            handles.callback(db.close)
+            db.create_session(session_id, 'cli', model=f'profile-model-{index}')
+            db.append_message(session_id, 'user', f'profile{index}isolatedhistory')
+            db.update_token_counts(session_id, input_tokens=index + 1,
+                                   output_tokens=index + 2, api_call_count=1)
+            (home / 'memories').mkdir()
+            (home / 'memories/MEMORY.md').write_text(f'profile {index} memory')
+            (home / 'SOUL.md').write_text(f'profile {index} identity')
+            (home / 'config.yaml').write_text(f'model: profile-model-{index}\n')
+            (home / '.env').write_text(f'FIXTURE_SECRET=profile-{index}')
+            expected[relative] = (
+                db.get_messages(session_id), db.get_session(session_id),
+                (home / 'memories/MEMORY.md').read_bytes(),
+                (home / 'SOUL.md').read_bytes(), (home / 'config.yaml').read_bytes(),
+            )
+
+        # Take the checkpoint while original native WAL databases remain open.
+        data = persistence.snapshot(source)
+        persistence.restore(destination, data, hashlib.sha256(data).hexdigest())
+
+        for index, relative in enumerate(homes):
+            home = destination / relative
+            with ExitStack() as restored_handles:
+                db = SessionDB(home / 'state.db', read_only=True)
+                restored_handles.callback(db.close)
+                messages, session, memory, soul, config = expected[relative]
+                assert db.get_messages(session_id) == messages
+                restored = db.get_session(session_id)
+                for key in ['model', 'input_tokens', 'output_tokens', 'api_call_count']:
+                    assert restored[key] == session[key]
+                assert db.search_messages(f'profile{index}isolatedhistory')
+                for other_index in range(len(homes)):
+                    if other_index != index:
+                        assert not db.search_messages(f'profile{other_index}isolatedhistory')
+                assert (home / 'memories/MEMORY.md').read_bytes() == memory
+                assert (home / 'SOUL.md').read_bytes() == soul
+                assert (home / 'config.yaml').read_bytes() == config
+                assert not (home / '.env').exists()
+
+
 def test_authenticated_http_checkpoint_transport(tmp_path):
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
