@@ -132,3 +132,21 @@ def test_named_backend_reopens_latest_store_and_retires_only_old_profile_cache_a
     assert retired == [old_session]
     assert server._sessions == {"legacy": legacy_session}
     reopened.close()
+
+
+def test_stage_into_fresh_gateway_creates_profiles_parent_without_activating(homes, tmp_path, monkeypatch):
+    root, trial = homes
+    destination = tmp_path / "fresh-destination"
+    destination.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(destination))
+    monkeypatch.setattr(server, "_hermes_home", str(destination))
+    gateway = call("profiles.handoff", {"action": "gateway"})["result"]["gateway"]
+    handoff.enroll(trial)
+    op = uuid.uuid4().hex
+    handoff.freeze(trial, op, gateway)
+    capsule = handoff.export(trial, op, "ab" * 32)
+    assert not (destination / "profiles").exists()
+    staged = call("profiles.handoff", {"action": "stage", "name": trial.name, "capsule": capsule, "encryption_key": "ab" * 32})
+    assert staged["result"]["phase"] == "staged"
+    with pytest.raises(handoff.HandoffError), handoff.execution(destination / "profiles" / trial.name):
+        pass

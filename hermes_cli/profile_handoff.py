@@ -61,7 +61,7 @@ def _lock(home: Path, *, exclusive: bool = False):
     except ImportError:
         raise HandoffError("Profile handoff requires a POSIX trial gateway") from None
     lock_root = home.parent / ".execution-handoff-locks"
-    lock_root.mkdir(mode=0o700, exist_ok=True)
+    lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (lock_root / (home.name + ".lock")).open("a+b") as handle:
         try:
             fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
