@@ -4,22 +4,30 @@ import threading, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ROOT_FILES = {'config.yaml', 'state.db', 'bot-state.json', 'standalone-restart-proof.sqlite', 'standalone-restart-proof.json', 'runs_idempotency.db'}
+ROOT_FILES = {'config.yaml', 'profile.yaml', 'SOUL.md', 'active_profile', 'state.db', 'bot-state.json', 'standalone-restart-proof.sqlite', 'standalone-restart-proof.json', 'runs_idempotency.db'}
 ROOT_DIRS = {'sessions', 'cron', 'memories', 'skills'}
 LIMIT = 32 * 1024 * 1024
 
 
-def allowed(name):
+def allowed(name, include_secrets=False):
     p = Path(name)
-    return not p.is_absolute() and '..' not in p.parts and (name in ROOT_FILES or (p.parts and p.parts[0] in ROOT_DIRS)) and not any(x.endswith(('-wal', '-shm', '.lock')) or x == '.env' for x in p.parts)
+    if p.is_absolute() or '..' in p.parts or any(x.endswith(('-wal', '-shm', '.lock')) for x in p.parts):
+        return False
+    if len(p.parts) >= 3 and p.parts[0] == 'profiles':
+        if p.parts[1].startswith('.'):
+            return False
+        return allowed(str(Path(*p.parts[2:])), include_secrets)
+    if name in {'.env', 'auth.json', 'honcho.json'}:
+        return include_secrets
+    return name in ROOT_FILES or (bool(p.parts) and p.parts[0] in ROOT_DIRS and '.env' not in p.parts)
 
 
-def snapshot(home):
+def snapshot(home, include_secrets=False):
     out = io.BytesIO()
     with tempfile.TemporaryDirectory() as temporary, tarfile.open(fileobj=out, mode='w:gz') as archive:
         for source in sorted(home.rglob('*')):
             name = str(source.relative_to(home))
-            if not allowed(name) or source.is_symlink() or not source.is_file():
+            if not allowed(name, include_secrets) or source.is_symlink() or not source.is_file() or any(p.is_symlink() for p in source.parents):
                 continue
             if source.suffix in {'.db', '.sqlite'}:
                 target = Path(temporary) / uuid.uuid4().hex
@@ -36,12 +44,12 @@ def snapshot(home):
     return data
 
 
-def restore(home, data, digest):
+def restore(home, data, digest, include_secrets=False):
     if hashlib.sha256(data).hexdigest() != digest:
         raise ValueError('Checkpoint digest mismatch')
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
         members = archive.getmembers()
-        if sum(x.size for x in members) > LIMIT * 4 or any(not x.isfile() or not allowed(x.name) for x in members):
+        if sum(x.size for x in members) > LIMIT * 4 or any(not x.isfile() or not allowed(x.name, include_secrets) for x in members):
             raise ValueError('Unsafe checkpoint member')
         for member in members:
             target = home / member.name
